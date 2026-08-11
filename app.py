@@ -3029,7 +3029,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                한국청소년활동진흥원 · AI 업무지원 도구</span></div>""",
+                KYWA 데이터 융복합 도구</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
