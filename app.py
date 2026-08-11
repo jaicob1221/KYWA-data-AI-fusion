@@ -243,6 +243,41 @@ div[data-testid="stMarkdownContainer"] .cm-card h2 {
   border: 1px solid #334155 !important; border-radius: 14px !important;
   padding: 1rem 1.2rem !important; margin: 0.45rem 0 0.7rem 0.5rem !important;
 }
+
+/* 로그인/회원가입 폼·버튼 가시성 */
+div[data-testid="stForm"] {
+  background: #1e293b !important;
+  border: 1px solid #475569 !important;
+  border-radius: 14px !important;
+  padding: 1rem 1.1rem 1.15rem !important;
+}
+div[data-testid="stForm"] label p {
+  color: #e2e8f0 !important;
+  font-weight: 600 !important;
+}
+/* 폼 제출 버튼 기본 */
+div[data-testid="stForm"] button[kind="secondaryFormSubmit"],
+div[data-testid="stForm"] button[kind="primaryFormSubmit"],
+div[data-testid="stForm"] button {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border: 2px solid #93c5fd !important;
+  font-weight: 700 !important;
+  font-size: 1.05rem !important;
+  min-height: 2.6rem !important;
+  border-radius: 10px !important;
+}
+div[data-testid="stForm"] button:hover {
+  background: #1d4ed8 !important;
+  border-color: #bfdbfe !important;
+  color: #fff !important;
+}
+/* 회원가입 모드 강조용 클래스 대체: 두 번째 폼 버튼 초록 */
+form[action*="signup"] button,
+div[data-testid="stForm"]:has(button[kind*="FormSubmit"]) button {
+  background: #2563eb !important;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -3051,10 +3086,25 @@ if not st.session_state.logged_in:
             key="auth_mode",
         )
         if mode == "로그인":
+            st.markdown(
+                '<div style="background:#1e3a5f;border:1px solid #3b82f6;border-radius:10px;'
+                'padding:0.55rem 0.85rem;margin-bottom:0.6rem;color:#bfdbfe;font-weight:700;">'
+                '🔑 로그인</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """<style>
+                div[data-testid="stForm"] button {
+                  background: #2563eb !important; color: #fff !important;
+                  border: 2px solid #93c5fd !important; font-weight: 800 !important;
+                }
+                </style>""",
+                unsafe_allow_html=True,
+            )
             with st.form("login_form_v2"):
                 login_id = st.text_input("아이디", key="f_login_id")
                 login_pw = st.text_input("비밀번호", type="password", key="f_login_pw")
-                login_submit = st.form_submit_button("로그인", use_container_width=True)
+                login_submit = st.form_submit_button("로그인", type="primary", use_container_width=True)
                 if login_submit:
                     lid = (st.session_state.get("f_login_id") or login_id or "").strip()
                     lpw = (st.session_state.get("f_login_pw") or login_pw or "").strip()
@@ -3080,12 +3130,27 @@ if not st.session_state.logged_in:
                         else:
                             st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
         else:
+            st.markdown(
+                '<div style="background:#14532d;border:1px solid #22c55e;border-radius:10px;'
+                'padding:0.55rem 0.85rem;margin-bottom:0.6rem;color:#bbf7d0;font-weight:700;">'
+                '📝 회원가입 (관리자 승인 후 이용)</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """<style>
+                div[data-testid="stForm"] button {
+                  background: #16a34a !important; color: #fff !important;
+                  border: 2px solid #86efac !important; font-weight: 800 !important;
+                }
+                </style>""",
+                unsafe_allow_html=True,
+            )
             st.caption("내부 사용자 계정 생성 · 관리자 승인 후 로그인 가능")
             with st.form("signup_form_v2"):
                 signup_id = st.text_input("새 아이디", key="f_signup_id")
                 signup_pw = st.text_input("새 비밀번호", type="password", key="f_signup_pw")
                 signup_pw2 = st.text_input("비밀번호 확인", type="password", key="f_signup_pw2")
-                signup_submit = st.form_submit_button("회원가입", use_container_width=True)
+                signup_submit = st.form_submit_button("회원가입 신청", type="primary", use_container_width=True)
                 if signup_submit:
                     sid = (st.session_state.get("f_signup_id") or signup_id or "").strip()
                     spw = (st.session_state.get("f_signup_pw") or signup_pw or "").strip()
