@@ -3029,7 +3029,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                KYWA 데이터 융복합 도구</span></div>""",
+                한국청소년활동진흥원 · AI 업무지원 도구</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
@@ -3040,58 +3040,84 @@ if not st.session_state.logged_in:
     st.markdown('<div class="section-line"></div>', unsafe_allow_html=True)
     st.markdown("<div style='height: 1.0rem;'></div>", unsafe_allow_html=True)
 
+
     left, center, right = st.columns([1.0, 1.8, 1.0])
     with center:
-        tab_login, tab_signup = st.tabs(["로그인", "회원가입"])
-        with tab_login:
-            st.text_input("아이디", key="login_id")
-            st.text_input("비밀번호", type="password", key="login_pw")
-            if st.button("로그인", use_container_width=True, key="btn_login"):
-                login_id = (st.session_state.get("login_id") or "").strip()
-                login_pw = (st.session_state.get("login_pw") or "").strip()
-                users = load_users()
-                if login_id in users and users[login_id]["password"] == hash_pw(login_pw):
-                    u = users[login_id]
-                    # 관리자는 항상 승인된 것으로 간주
-                    is_admin = (login_id == ADMIN_USER) or (u.get("role") == "admin")
-                    approved = is_admin or bool(u.get("approved", False))
-                    if not approved:
-                        st.warning("관리자 승인 대기 중입니다. 승인 후 로그인할 수 있습니다.")
+        mode = st.radio(
+            "계정",
+            ["로그인", "회원가입"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="auth_mode",
+        )
+        if mode == "로그인":
+            with st.form("login_form_v2"):
+                login_id = st.text_input("아이디", key="f_login_id")
+                login_pw = st.text_input("비밀번호", type="password", key="f_login_pw")
+                login_submit = st.form_submit_button("로그인", use_container_width=True)
+                if login_submit:
+                    lid = (st.session_state.get("f_login_id") or login_id or "").strip()
+                    lpw = (st.session_state.get("f_login_pw") or login_pw or "").strip()
+                    if not lid or not lpw:
+                        st.warning("아이디와 비밀번호를 입력해주세요.")
                     else:
-                        st.session_state.logged_in = True
-                        st.session_state.username = login_id
-                        st.session_state.last_active = time.time()
-                        inc_login_count()
-                        st.rerun()
-                else:
-                    st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
-        with tab_signup:
-            st.caption("내부 사용자 계정 생성")
-            st.text_input("새 아이디", key="signup_id")
-            st.text_input("새 비밀번호", type="password", key="signup_pw")
-            st.text_input("비밀번호 확인", type="password", key="signup_pw2")
-            if st.button("회원가입", use_container_width=True, key="btn_signup"):
-                signup_id = (st.session_state.get("signup_id") or "").strip()
-                signup_pw = (st.session_state.get("signup_pw") or "").strip()
-                signup_pw2 = (st.session_state.get("signup_pw2") or "").strip()
-                users = load_users()
-                if not signup_id or not signup_pw:
-                    st.warning("아이디와 비밀번호를 입력해주세요.")
-                elif signup_pw != signup_pw2:
-                    st.error("비밀번호 확인이 일치하지 않습니다.")
-                elif signup_id in users:
-                    st.error("이미 존재하는 아이디입니다.")
-                else:
-                    users[signup_id] = {
-                        "password": hash_pw(signup_pw),
-                        "name": signup_id,
-                        "approved": False,
-                        "role": "user",
-                    }
-                    save_users(users)
-                    st.success("가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.")
+                        users = load_users()
+                        if lid in users and users[lid].get("password") == hash_pw(lpw):
+                            u = users[lid]
+                            is_admin = (lid == ADMIN_USER) or (u.get("role") == "admin")
+                            approved = is_admin or bool(u.get("approved", False))
+                            if not approved:
+                                st.warning("관리자 승인 대기 중입니다. 승인 후 로그인할 수 있습니다.")
+                            else:
+                                st.session_state.logged_in = True
+                                st.session_state.username = lid
+                                st.session_state.last_active = time.time()
+                                try:
+                                    inc_login_count()
+                                except Exception:
+                                    pass
+                                st.rerun()
+                        else:
+                            st.error("아이디 또는 비밀번호가 올바르지 않습니다.")
+        else:
+            st.caption("내부 사용자 계정 생성 · 관리자 승인 후 로그인 가능")
+            with st.form("signup_form_v2"):
+                signup_id = st.text_input("새 아이디", key="f_signup_id")
+                signup_pw = st.text_input("새 비밀번호", type="password", key="f_signup_pw")
+                signup_pw2 = st.text_input("비밀번호 확인", type="password", key="f_signup_pw2")
+                signup_submit = st.form_submit_button("회원가입", use_container_width=True)
+                if signup_submit:
+                    sid = (st.session_state.get("f_signup_id") or signup_id or "").strip()
+                    spw = (st.session_state.get("f_signup_pw") or signup_pw or "").strip()
+                    spw2 = (st.session_state.get("f_signup_pw2") or signup_pw2 or "").strip()
+                    if not sid or not spw:
+                        st.warning("아이디와 비밀번호를 입력해주세요.")
+                    elif len(spw) < 4:
+                        st.warning("비밀번호는 4자 이상 입력해주세요.")
+                    elif spw != spw2:
+                        st.error("비밀번호 확인이 일치하지 않습니다.")
+                    else:
+                        users = load_users()
+                        if sid in users:
+                            st.error("이미 존재하는 아이디입니다.")
+                        else:
+                            try:
+                                users[sid] = {
+                                    "password": hash_pw(spw),
+                                    "name": sid,
+                                    "approved": True if sid == ADMIN_USER else False,
+                                    "role": "admin" if sid == ADMIN_USER else "user",
+                                }
+                                save_users(users)
+                                if sid == ADMIN_USER:
+                                    st.success("관리자 계정이 생성되었습니다. 로그인으로 전환해 접속하세요.")
+                                else:
+                                    st.success("가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.")
+                            except Exception as e:
+                                st.error(f"저장 중 오류: {e}")
     st.markdown("<div style='height: 3.5rem;'></div>", unsafe_allow_html=True)
     st.stop()
+
 
 # ---------- 사이드바 ----------
 if (ASSETS / "logo.png").exists():
