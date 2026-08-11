@@ -28,6 +28,8 @@ VECTOR_DIR = Path("vector_db")
 CACHE_DIR = Path("cache")
 CERT_CACHE_FILE = CACHE_DIR / "cert_programs.json.gz"
 CERT_CACHE_TTL_HOURS = 24  # 파일 캐시 유효 시간(시간)
+YOUTH_CACHE_FILE = CACHE_DIR / "youth_programs.json.gz"
+YOUTH_CACHE_TTL_DAYS = 30  # 청소년활동 캐시 유효(일)
 GGOMGIL_CSV = CACHE_DIR / "ggomgil_programs.csv"  # 꿈길 진로체험프로그램
 CN_MAJOR_CACHE = CACHE_DIR / "careernet_majors.json"
 CN_SCHOOL_CACHE = CACHE_DIR / "careernet_schools.json"
@@ -285,13 +287,82 @@ div[data-testid="stForm"]:has(button[kind*="FormSubmit"]) button {
 def hash_pw(pw: str) -> str:
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
 
+def _seed_admin_user(users: dict) -> dict:
+    """재배포 후에도 secrets의 관리자 비밀번호로 yjchoi 복구"""
+    try:
+        admin_pw = (st.secrets.get("ADMIN_PASSWORD", "") or "").strip()
+    except Exception:
+        admin_pw = ""
+    if not admin_pw:
+        return users
+    u = users.get(ADMIN_USER) or {}
+    users[ADMIN_USER] = {
+        "password": hash_pw(admin_pw),
+        "name": ADMIN_USER,
+        "approved": True,
+        "role": "admin",
+        **{k: v for k, v in u.items() if k not in ("password", "approved", "role")},
+    }
+    return users
+
+
+def normalize_users(users: dict) -> dict:
+    """구버전 users.json에 approved 등이 없어도 표준 필드로 맞춤"""
+    out = {}
+    for uid, info in (users or {}).items():
+        if not uid:
+            continue
+        if not isinstance(info, dict):
+            # 아주 옛 형식: {"id": "해시비번"} 만 있는 경우
+            info = {"password": str(info)}
+        is_admin = (uid == ADMIN_USER) or (info.get("role") == "admin")
+        approved = info.get("approved", None)
+        if approved is None:
+            # 필드가 없으면: 관리자만 승인, 나머지는 미승인
+            approved = True if is_admin else False
+        else:
+            approved = bool(approved)
+        out[uid] = {
+            "password": info.get("password") or "",
+            "name": info.get("name") or uid,
+            "approved": True if is_admin else approved,
+            "role": "admin" if is_admin else (info.get("role") or "user"),
+        }
+    return out
+
+
 def load_users():
-    if not USER_DB.exists():
-        return {}
-    with open(USER_DB, "r", encoding="utf-8") as f:
-        return json.load(f)
+    users = {}
+    if USER_DB.exists():
+        try:
+            with open(USER_DB, "r", encoding="utf-8") as f:
+                users = json.load(f) or {}
+        except Exception:
+            users = {}
+    # secrets에 USERS_JSON 백업이 있으면 병합 (재배포 복구용)
+    try:
+        raw = st.secrets.get("USERS_JSON", "")
+        if raw:
+            if isinstance(raw, str) and raw.strip():
+                backup = json.loads(raw)
+            elif isinstance(raw, dict):
+                backup = raw
+            else:
+                backup = {}
+            for uid, info in (backup or {}).items():
+                if uid not in users:
+                    users[uid] = info
+    except Exception:
+        pass
+    users = normalize_users(users)
+    users = _seed_admin_user(users)
+    return users
+
 
 def save_users(users):
+    users = normalize_users(dict(users or {}))
+    users = _seed_admin_user(users)
+    USER_DB.parent.mkdir(parents=True, exist_ok=True)
     with open(USER_DB, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
 
@@ -713,6 +784,219 @@ def fetch_youth_singo_programs(
                 continue
 
     return [], last_meta or {"error": "모든 청소년활동 API 후보 실패"}
+
+
+
+def get_youth_api_key() -> str:
+    dummy = {"0000", "0", "test", "YOUR_KEY", "changeme", ""}
+    try:
+        y_raw = (st.secrets.get("YOUTH_ACTIV_KEY", "") or "").strip()
+        d_raw = (st.secrets.get("DATA_GO_KR_KEY", "") or "").strip()
+        if y_raw and y_raw not in dummy:
+            return y_raw
+        if d_raw and d_raw not in dummy:
+            return d_raw
+    except Exception:
+        pass
+    return ""
+
+
+def load_youth_file_cache(ttl_days: int = None):
+    """청소년활동 전체 캐시 로드. 유효하면 items, meta / 아니면 None, meta"""
+    import gzip
+    from datetime import datetime, timezone
+    ttl_days = YOUTH_CACHE_TTL_DAYS if ttl_days is None else ttl_days
+    meta = {"path": str(YOUTH_CACHE_FILE), "ttl_days": ttl_days}
+    if not YOUTH_CACHE_FILE.exists():
+        meta["status"] = "missing"
+        return None, meta
+    try:
+        with gzip.open(YOUTH_CACHE_FILE, "rt", encoding="utf-8") as f:
+            payload = json.load(f)
+        items = payload.get("items") or []
+        saved_at = payload.get("saved_at") or ""
+        meta["saved_at"] = saved_at
+        meta["count"] = len(items)
+        try:
+            if isinstance(saved_at, (int, float)):
+                saved_ts = float(saved_at)
+            else:
+                saved_ts = datetime.fromisoformat(str(saved_at).replace("Z", "+00:00")).timestamp()
+            age_d = (time.time() - saved_ts) / 86400.0
+            meta["age_days"] = round(age_d, 2)
+            if age_d > ttl_days:
+                meta["status"] = "expired"
+                # 만료여도 일단 데이터는 반환 (매칭용) — 상태만 expired
+                return items, meta
+        except Exception as e:
+            meta["date_error"] = str(e)
+        if not items:
+            meta["status"] = "empty"
+            return None, meta
+        meta["status"] = meta.get("status") or "ok"
+        return items, meta
+    except Exception as e:
+        meta["status"] = f"load_error:{e}"
+        return None, meta
+
+
+def save_youth_file_cache(items: list):
+    import gzip
+    from datetime import datetime, timezone
+    CACHE_DIR.mkdir(exist_ok=True)
+    payload = {
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items or []),
+        "items": items or [],
+    }
+    tmp = YOUTH_CACHE_FILE.with_suffix(".tmp.gz")
+    with gzip.open(tmp, "wt", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    tmp.replace(YOUTH_CACHE_FILE)
+    return {"path": str(YOUTH_CACHE_FILE), "count": payload["count"], "saved_at": payload["saved_at"]}
+
+
+def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages: int = 200, progress_cb=None):
+    """
+    청소년활동 API 전체 페이지 순회 수집.
+    totalCount 가 있으면 그 기준으로, 없으면 빈 페이지까지.
+    """
+    all_items = []
+    seen = set()
+    last_meta = {}
+    total = None
+    for page in range(1, max_pages + 1):
+        part, meta = fetch_youth_singo_programs(
+            service_key,
+            sido="",
+            pgm="",
+            page_no=page,
+            num_of_rows=num_of_rows,
+        )
+        last_meta = meta or {}
+        if total is None and meta.get("totalCount") not in (None, ""):
+            try:
+                total = int(meta.get("totalCount"))
+            except Exception:
+                total = None
+        if not part:
+            break
+        for it in part:
+            if not isinstance(it, dict):
+                continue
+            # 중복키
+            key = (
+                str(it.get("prgrmNm") or it.get("pgmNm") or it.get("atName") or "")
+                + "|"
+                + str(it.get("fcltyNm") or it.get("organNm") or it.get("orgName") or "")
+                + "|"
+                + str(it.get("actvBgngYmd") or it.get("sdate") or "")
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            all_items.append(it)
+        if progress_cb:
+            progress_cb(page, len(all_items), total)
+        if total is not None and len(all_items) >= total:
+            break
+        if len(part) < num_of_rows:
+            break
+        time.sleep(0.15)
+    last_meta["collected"] = len(all_items)
+    last_meta["pages"] = page if 'page' in dir() else 0
+    return all_items, last_meta
+
+
+def filter_youth_cache_by_keywords(items: list, keywords: list, region: str = "", limit: int = 40):
+    """캐시에서 키워드·지역 1차 필터"""
+    kws = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+    kws = expand_interest_keywords(kws) if kws else []
+    region_tokens = []
+    if region:
+        region_tokens.append(region)
+        if region.endswith("시") or region.endswith("도"):
+            region_tokens.append(region[:-1])
+        for a, b in (("특별시", ""), ("광역시", ""), ("특별자치시", ""), ("특별자치도", "")):
+            if a in region:
+                region_tokens.append(region.replace(a, ""))
+    scored = []
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        info = normalize_youth_program(it)
+        blob = " ".join(
+            str(x or "")
+            for x in [
+                info.get("name"),
+                info.get("facility"),
+                info.get("target"),
+                info.get("addr"),
+                info.get("sido"),
+                info.get("sgg"),
+                it.get("prgrmOtlnCn"),
+                it.get("actvRelmNm"),
+                it.get("actvTypeNm"),
+            ]
+        )
+        sc = 0
+        for k in kws:
+            if k and k in blob:
+                sc += 3 if k in (info.get("name") or "") else 1
+        # 지역: 있으면 가점, 없어도 탈락시키지 않음(1차 후보)
+        loc = f"{info.get('sido','')} {info.get('sgg','')} {info.get('addr','')} {info.get('facility','')}"
+        if region_tokens and any(t and t in loc for t in region_tokens):
+            sc += 2
+        if sc > 0:
+            scored.append((sc, it))
+    scored.sort(key=lambda x: -x[0])
+    return [x[1] for x in scored[:limit]]
+
+
+def ai_pick_youth_from_cache(provider, api_key, keywords: list, region: str, candidates: list, limit: int = 12):
+    """AI가 캐시 후보 중 관련 활동만 선별"""
+    if not candidates:
+        return []
+    if not api_key:
+        return candidates[:limit]
+    slim = []
+    for i, it in enumerate(candidates[:50]):
+        info = normalize_youth_program(it)
+        slim.append({
+            "i": i,
+            "name": info.get("name") or "",
+            "facility": info.get("facility") or "",
+            "target": info.get("target") or "",
+            "sido": info.get("sido") or "",
+            "addr": (info.get("addr") or "")[:40],
+        })
+    try:
+        prompt = (
+            f"관심: {keywords}\n지역: {region or '전국'}\n"
+            f"후보: {json.dumps(slim, ensure_ascii=False)}\n"
+            f'관심·지역과 관련 높은 순 {{"idx":[...]}} 최대 {limit}개. 무관하면 넣지 말 것.'
+        )
+        raw = get_ai_response(
+            provider,
+            api_key,
+            "청소년활동 선별기. JSON만 출력.",
+            prompt,
+        )
+        m = re.search(r"\{[\s\S]*\}", raw or "")
+        if m:
+            idxs = json.loads(m.group(0)).get("idx") or []
+            out = []
+            for i in idxs:
+                try:
+                    ii = int(i)
+                    if 0 <= ii < len(candidates):
+                        out.append(candidates[ii])
+                except Exception:
+                    pass
+            return out[:limit]
+    except Exception:
+        pass
+    return candidates[:limit]
 
 
 def naver_map_link(lat, lng, name=""):
@@ -4444,6 +4728,11 @@ elif tool == "🔐 관리자 · 가입승인 / 비밀번호":
         st.error("관리자만 접근할 수 있습니다.")
     else:
         st.markdown("### 회원가입 승인")
+        st.caption(
+            "⚠️ Streamlit Cloud는 앱 재배포 시 로컬 회원파일이 초기화될 수 있습니다. "
+            "승인 후 아래 **회원 JSON 내보내기**를 받아 secrets의 USERS_JSON에 붙여 두면 복구됩니다."
+        )
+
         users = load_users()
         # 관리자 계정 자동 승인 플래그
         if ADMIN_USER in users:
@@ -4498,7 +4787,32 @@ elif tool == "🔐 관리자 · 가입승인 / 비밀번호":
         with c2:
             st.metric("AI 실행 합계", f"{sum(usage.get('menu_counts', {}).values()):,}회")
         st.markdown("---")
+        st.markdown("### 회원 데이터 백업·복구")
+        users_now = load_users()
+        st.download_button(
+            "📥 회원 JSON 내보내기",
+            data=json.dumps(users_now, ensure_ascii=False, indent=2),
+            file_name="users_backup.json",
+            mime="application/json",
+            key="dl_users_json",
+        )
+        up = st.file_uploader("회원 JSON 가져오기 (복구)", type=["json"], key="up_users_json")
+        if up is not None and st.button("가져오기 적용", key="btn_import_users"):
+            try:
+                imported = json.loads(up.read().decode("utf-8"))
+                if not isinstance(imported, dict):
+                    st.error("JSON 최상위는 객체(dict)여야 합니다.")
+                else:
+                    cur = load_users()
+                    cur.update(imported)
+                    save_users(cur)
+                    st.success(f"복구 완료: {len(imported)}명 병합")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"가져오기 실패: {e}")
+        st.markdown("---")
         st.markdown("### 비밀번호 재설정")
+
         users = load_users()
         if users:
             target_id = st.selectbox("사용자", list(users.keys()))
@@ -4988,8 +5302,53 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
     if "career_youth" not in st.session_state:
         st.session_state.career_youth = []
 
-    # 관리자: 진로솔루션 자료 스크래핑
+    # 관리자: 청소년활동 일괄 캐시 + 진로솔루션 스크래핑
     if st.session_state.get("username") == ADMIN_USER:
+        with st.expander("관리자 · 청소년활동 API 일괄 수집(캐시)"):
+            y_all, y_meta = load_youth_file_cache()
+            st.caption(
+                f"캐시 상태: {(y_meta or {}).get('status', '-')} · "
+                f"건수: {(y_meta or {}).get('count', 0)} · "
+                f"저장: {(y_meta or {}).get('saved_at', '-')}"
+            )
+            ykey = get_youth_api_key()
+            if not ykey:
+                st.warning("YOUTH_ACTIV_KEY 또는 DATA_GO_KR_KEY 가 Secrets에 필요합니다.")
+            max_pages = st.number_input("최대 페이지", 1, 500, 100, key="youth_max_pages")
+            rows_pp = st.number_input("페이지당 건수", 10, 200, 100, key="youth_rows")
+            if st.button("청소년활동 전체 수집·캐시 저장", type="primary", key="btn_youth_scrape"):
+                if not ykey:
+                    st.error("API 키가 없습니다.")
+                else:
+                    prog = st.progress(0)
+                    status = st.empty()
+                    def _cb(page, n, total):
+                        status.write(f"페이지 {page} · 수집 {n}건" + (f" / 전체약 {total}" if total else ""))
+                        if total:
+                            prog.progress(min(1.0, n / max(total, 1)))
+                        else:
+                            prog.progress(min(1.0, page / max(int(max_pages), 1)))
+                    with st.spinner("청소년활동 API 수집 중…"):
+                        items, meta = fetch_youth_programs_all(
+                            ykey,
+                            num_of_rows=int(rows_pp),
+                            max_pages=int(max_pages),
+                            progress_cb=_cb,
+                        )
+                    if items:
+                        info = save_youth_file_cache(items)
+                        st.success(f"저장 완료: {info.get('count')}건 → {info.get('path')}")
+                        st.json({k: meta.get(k) for k in list(meta.keys())[:12]})
+                    else:
+                        st.error("수집 결과가 비었습니다. API 키·엔드포인트를 확인하세요.")
+                        st.write(meta)
+            if y_all and st.button("청소년활동 캐시 삭제", key="btn_youth_cache_del"):
+                try:
+                    YOUTH_CACHE_FILE.unlink(missing_ok=True)
+                    st.success("캐시 삭제됨")
+                    st.rerun()
+                except Exception as e:
+                    st.error(str(e))
         with st.expander("관리자 · 진로솔루션 자료 스크래핑"):
             st.caption("진로상담 > 진로솔루션 게시글 목록·상세·PDF 요약을 로컬 캐시에 저장합니다.")
             jmeta = {}
@@ -5638,49 +5997,44 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
 
             youth_items = []
             try:
-                ykey = ""
-                try:
-                    # 청소년활동 전용 키 우선 (0000 등 더미 무시)
-                    y_raw = (st.secrets.get("YOUTH_ACTIV_KEY", "") or "").strip()
-                    d_raw = (st.secrets.get("DATA_GO_KR_KEY", "") or "").strip()
-                    dummy = {"0000", "0", "test", "YOUR_KEY", "changeme"}
-                    if y_raw and y_raw not in dummy:
-                        ykey = y_raw
-                    elif d_raw and d_raw not in dummy:
-                        ykey = d_raw
-                except Exception:
-                    ykey = ""
-                if not ykey:
+                y_all, y_meta = load_youth_file_cache()
+                if not y_all:
                     st.session_state.career_youth_meta = {
-                        "error": "YOUTH_ACTIV_KEY 가 없거나 0000 더미값입니다. 공공데이터포털에서 발급받은 실제 인증키를 넣으세요."
+                        "error": "청소년활동 캐시가 없습니다. 관리자 메뉴에서 API 일괄 수집을 실행하세요.",
+                        **(y_meta or {}),
                     }
-                if ykey:
-                    collected = []
-                    ymeta = {}
-                    trials = list(search_kws[:5]) + ([""] if not search_kws else [])
-                    for pgm in trials:
-                        part, ymeta = fetch_youth_singo_programs(
-                            ykey,
-                            sido="",
-                            pgm=pgm or "",
-                            num_of_rows=30,
+                else:
+                    cand = filter_youth_cache_by_keywords(
+                        y_all, search_kws, region=region or "", limit=40
+                    )
+                    if not cand and search_kws:
+                        # 키워드 약하면 상위 일부만이라도 AI 후보로
+                        cand = y_all[:30]
+                    if api_key and cand:
+                        youth_items = ai_pick_youth_from_cache(
+                            provider, api_key, search_kws, region or "", cand, limit=12
                         )
-                        if part:
-                            collected.extend(part)
-                        if len(collected) >= 30:
-                            break
-                    if search_kws and collected:
-                        filtered = filter_items_by_keywords(
-                            collected, search_kws, min_score=2, limit=12
-                        )
-                        # 무관 결과는 표시하지 않음
-                        youth_items = filtered
-                        if not filtered:
-                            ymeta = dict(ymeta or {})
-                            ymeta["note"] = "관심 키워드와 일치하는 청소년활동이 없습니다"
                     else:
-                        youth_items = []
-                    st.session_state.career_youth_meta = ymeta
+                        youth_items = cand[:12]
+                    # 지역 최종 필터 (가능하면)
+                    if region and youth_items:
+                        loc_filtered = []
+                        for row in youth_items:
+                            info = normalize_youth_program(row)
+                            loc = " ".join(
+                                x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility")] if x
+                            )
+                            if region_matches_user(loc, region) or not loc.strip():
+                                loc_filtered.append(row)
+                        if loc_filtered:
+                            youth_items = loc_filtered
+                    st.session_state.career_youth_meta = {
+                        "cache_count": len(y_all),
+                        "cache_status": (y_meta or {}).get("status"),
+                        "candidates": len(cand) if y_all else 0,
+                        "picked": len(youth_items),
+                        "saved_at": (y_meta or {}).get("saved_at"),
+                    }
             except Exception as e:
                 st.session_state.career_youth_meta = {"error": str(e)}
             st.session_state.career_youth = youth_items or []
@@ -5976,7 +6330,9 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
         y_hits = st.session_state.get("career_youth") or []
         user_region = (st.session_state.get("career_profile") or {}).get("region") or ""
         if not y_hits:
-            cm_empty("검색 결과가 없거나 활동 API 설정을 확인하세요.")
+            meta_y = st.session_state.get("career_youth_meta") or {}
+            msg = meta_y.get("error") or "캐시에서 관련 활동을 찾지 못했습니다. 관리자 일괄 수집 후 다시 시도하세요."
+            cm_empty(msg)
         else:
             table_rows = []
             for row in y_hits[:30]:
