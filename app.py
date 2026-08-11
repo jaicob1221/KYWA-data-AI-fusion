@@ -667,6 +667,8 @@ def fetch_youth_singo_programs(
     org: str = "",
     page_no: int = 1,
     num_of_rows: int = 20,
+    sdate: str = "",
+    edate: str = "",
 ):
     """
     청소년활동 프로그램 검색 — 여러 공공 API 후보를 순차 시도
@@ -763,6 +765,12 @@ def fetch_youth_singo_programs(
                 params["org"] = org
                 params["organNm"] = org
                 params["orgName"] = org
+            if sdate:
+                params["sdate"] = sdate
+                params["startDate"] = sdate
+            if edate:
+                params["edate"] = edate
+                params["endDate"] = edate
             try:
                 res = requests.get(url, params=params, timeout=45, verify=False)
                 text = res.text or ""
@@ -817,6 +825,10 @@ def load_youth_file_cache(ttl_days: int = None):
         saved_at = payload.get("saved_at") or ""
         meta["saved_at"] = saved_at
         meta["count"] = len(items)
+        meta["last_page"] = payload.get("last_page") or 0
+        meta["complete"] = bool(payload.get("complete", False))
+        meta["num_of_rows"] = payload.get("num_of_rows")
+        meta["totalCount"] = payload.get("totalCount")
         try:
             if isinstance(saved_at, (int, float)):
                 saved_ts = float(saved_at)
@@ -840,7 +852,17 @@ def load_youth_file_cache(ttl_days: int = None):
         return None, meta
 
 
-def save_youth_file_cache(items: list):
+def _youth_item_key(it: dict) -> str:
+    return (
+        str(it.get("prgrmNm") or it.get("pgmNm") or it.get("atName") or it.get("programNm") or "")
+        + "|"
+        + str(it.get("fcltyNm") or it.get("organNm") or it.get("orgName") or it.get("operInstNm") or "")
+        + "|"
+        + str(it.get("actvBgngYmd") or it.get("sdate") or it.get("certNo") or "")
+    )
+
+
+def save_youth_file_cache(items: list, extra_meta: dict = None):
     import gzip
     from datetime import datetime, timezone
     CACHE_DIR.mkdir(exist_ok=True)
@@ -849,35 +871,61 @@ def save_youth_file_cache(items: list):
         "count": len(items or []),
         "items": items or [],
     }
+    if extra_meta:
+        payload.update(extra_meta)
     tmp = YOUTH_CACHE_FILE.with_suffix(".tmp.gz")
     with gzip.open(tmp, "wt", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
     tmp.replace(YOUTH_CACHE_FILE)
-    return {"path": str(YOUTH_CACHE_FILE), "count": payload["count"], "saved_at": payload["saved_at"]}
+    return {
+        "path": str(YOUTH_CACHE_FILE),
+        "count": payload["count"],
+        "saved_at": payload["saved_at"],
+        "last_page": payload.get("last_page"),
+        "complete": payload.get("complete"),
+    }
 
 
-def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages: int = 2000, progress_cb=None):
+def fetch_youth_programs_all(
+    service_key: str,
+    num_of_rows: int = 100,
+    max_pages: int = 2000,
+    progress_cb=None,
+    start_page: int = 1,
+    existing_items: list = None,
+    checkpoint_every: int = 10,
+    sdate: str = "",
+    edate: str = "",
+):
     """
     청소년활동 API 전체 페이지 순회 수집.
-    totalCount 가 있으면 그 기준으로, 없으면 빈 페이지·연속 실패까지.
-    ※ 공공 API는 페이지당 100~1000 제한인 경우가 많음 (5000 요청해도 잘림 가능)
+    - start_page / existing_items 로 이어받기 가능
+    - checkpoint_every 페이지마다 캐시 파일에 중간 저장
+    - sdate/edate: API 요청 단계 기간 필터 (운영·예정만)
     """
-    all_items = []
+    all_items = list(existing_items or [])
     seen = set()
+    for it in all_items:
+        if isinstance(it, dict):
+            seen.add(_youth_item_key(it))
     last_meta = {}
     total = None
     empty_streak = 0
-    page = 0
-    # API 과다 요청 방지: 페이지당 상한
+    page = max(1, int(start_page or 1)) - 1
     num_of_rows = max(10, min(int(num_of_rows or 100), 1000))
     max_pages = max(1, min(int(max_pages or 1), 5000))
-    for page in range(1, max_pages + 1):
+    start = max(1, int(start_page or 1))
+    complete = False
+
+    for page in range(start, max_pages + 1):
         part, meta = fetch_youth_singo_programs(
             service_key,
             sido="",
             pgm="",
             page_no=page,
             num_of_rows=num_of_rows,
+            sdate=sdate or "",
+            edate=edate or "",
         )
         last_meta = meta or {}
         if total is None and meta.get("totalCount") not in (None, ""):
@@ -888,6 +936,7 @@ def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages
         if not part:
             empty_streak += 1
             if empty_streak >= 3:
+                complete = True
                 break
             time.sleep(0.3)
             continue
@@ -895,30 +944,45 @@ def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages
         for it in part:
             if not isinstance(it, dict):
                 continue
-            key = (
-                str(it.get("prgrmNm") or it.get("pgmNm") or it.get("atName") or it.get("programNm") or "")
-                + "|"
-                + str(it.get("fcltyNm") or it.get("organNm") or it.get("orgName") or it.get("operInstNm") or "")
-                + "|"
-                + str(it.get("actvBgngYmd") or it.get("sdate") or it.get("certNo") or "")
-            )
+            key = _youth_item_key(it)
             if key in seen:
                 continue
             seen.add(key)
             all_items.append(it)
         if progress_cb:
             progress_cb(page, len(all_items), total)
+
+        # 중간 저장 (이어받기용)
+        if checkpoint_every and page % int(checkpoint_every) == 0:
+            try:
+                save_youth_file_cache(
+                    all_items,
+                    extra_meta={
+                        "last_page": page,
+                        "num_of_rows": num_of_rows,
+                        "totalCount": total,
+                        "complete": False,
+                        "sdate": sdate or "",
+                        "edate": edate or "",
+                    },
+                )
+            except Exception:
+                pass
+
         if total is not None and len(all_items) >= total:
+            complete = True
             break
-        # 마지막 페이지(요청보다 적게 옴)
         if len(part) < num_of_rows:
-            # totalCount 가 더 있으면 계속, 없으면 종료
-            if total is None or len(all_items) >= total:
+            if total is None or len(all_items) >= (total or 0):
+                complete = True
                 break
         time.sleep(0.12)
+
     last_meta["collected"] = len(all_items)
     last_meta["pages"] = page
     last_meta["totalCount"] = total
+    last_meta["complete"] = complete
+    last_meta["last_page"] = page
     return all_items, last_meta
 
 
@@ -5329,10 +5393,29 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
             if not ykey:
                 st.warning("YOUTH_ACTIV_KEY 또는 DATA_GO_KR_KEY 가 Secrets에 필요합니다.")
             st.info(
-                "약 12만 건 기준 권장: **페이지당 100~1000** × **페이지 200~1500**. "
-                "API가 페이지당 5000을 거부하면 자동으로 1000 이하로 맞춥니다. "
-                "전체 수집은 수십 분 걸릴 수 있습니다."
+                "① **이어받기**: 중단해도 중간 저장분에서 재개 가능. "
+                "② **운영·예정만**: API에 sdate~edate를 넣어 **호출 단계**에서 건수를 줄입니다. "
+                "페이지당 100~1000 권장."
             )
+            mode = st.radio(
+                "기간 필터 (API 요청)",
+                ["운영·예정만 (권장)", "전체 기간"],
+                horizontal=True,
+                key="youth_collect_mode",
+            )
+            from datetime import timedelta as _td
+            _today = datetime.now().date()
+            if mode.startswith("운영"):
+                _ds = (_today - _td(days=7)).strftime("%Y%m%d")
+                _de = (_today + _td(days=365)).strftime("%Y%m%d")
+            else:
+                _ds, _de = "", ""
+            d1, d2 = st.columns(2)
+            with d1:
+                sdate_in = st.text_input("sdate 활동시작일(YYYYMMDD)", value=_ds, key="youth_sdate")
+            with d2:
+                edate_in = st.text_input("edate 활동종료일(YYYYMMDD)", value=_de, key="youth_edate")
+            st.caption("비우면 기간 조건 없이 호출합니다. API가 기간 파라미터를 지원해야 효과가 있습니다.")
             c_a, c_b = st.columns(2)
             with c_a:
                 max_pages = st.number_input(
@@ -5358,6 +5441,27 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
                 f"예상 최대 수집량: 약 {int(max_pages) * int(rows_pp):,} 건 "
                 f"(실제는 API totalCount에서 멈춤)"
             )
+            last_page = int((y_meta or {}).get("last_page") or 0)
+            is_complete = bool((y_meta or {}).get("complete"))
+            cached_n = int((y_meta or {}).get("count") or 0)
+            if cached_n and not is_complete:
+                st.warning(
+                    f"이어받기 가능: 현재 캐시 **{cached_n:,}건** · 마지막 페이지 **{last_page}** "
+                    f"(완료 여부: {'완료' if is_complete else '미완료'})"
+                )
+            resume = st.checkbox(
+                "기존 캐시에서 이어받기 (체크 해제 시 처음부터)",
+                value=bool(cached_n and not is_complete),
+                key="youth_resume",
+            )
+            ck_every = st.number_input(
+                "중간 저장 주기(페이지)",
+                min_value=1,
+                max_value=50,
+                value=5,
+                key="youth_ckpt",
+                help="N페이지마다 파일로 저장 → 중단 후에도 이어받기 가능",
+            )
             if st.button("청소년활동 전체 수집·캐시 저장", type="primary", key="btn_youth_scrape"):
                 if not ykey:
                     st.error("API 키가 없습니다.")
@@ -5365,22 +5469,48 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
                     prog = st.progress(0)
                     status = st.empty()
                     def _cb(page, n, total):
-                        status.write(f"페이지 {page} · 수집 {n}건" + (f" / 전체약 {total}" if total else ""))
+                        status.write(
+                            f"페이지 {page} · 수집 {n:,}건"
+                            + (f" / 전체약 {total:,}" if total else "")
+                            + " · 중간저장됨"
+                        )
                         if total:
                             prog.progress(min(1.0, n / max(total, 1)))
                         else:
                             prog.progress(min(1.0, page / max(int(max_pages), 1)))
-                    with st.spinner("청소년활동 API 수집 중…"):
+                    existing = []
+                    start_page = 1
+                    if resume and y_all:
+                        existing = list(y_all)
+                        start_page = max(1, last_page + 1)
+                        status.write(f"이어받기: {len(existing):,}건 보유 → {start_page}페이지부터")
+                    with st.spinner("청소년활동 API 수집 중… (중단해도 중간 저장분 유지)"):
                         items, meta = fetch_youth_programs_all(
                             ykey,
                             num_of_rows=int(rows_pp),
                             max_pages=int(max_pages),
                             progress_cb=_cb,
+                            start_page=start_page,
+                            existing_items=existing,
+                            checkpoint_every=int(ck_every),
+                            sdate=(sdate_in or "").strip(),
+                            edate=(edate_in or "").strip(),
                         )
                     if items:
-                        info = save_youth_file_cache(items)
-                        st.success(f"저장 완료: {info.get('count')}건 → {info.get('path')}")
-                        st.json({k: meta.get(k) for k in list(meta.keys())[:12]})
+                        info = save_youth_file_cache(
+                            items,
+                            extra_meta={
+                                "last_page": meta.get("last_page") or meta.get("pages"),
+                                "num_of_rows": int(rows_pp),
+                                "totalCount": meta.get("totalCount"),
+                                "complete": bool(meta.get("complete")),
+                            },
+                        )
+                        done = "완료" if meta.get("complete") else "미완료(이어받기 가능)"
+                        st.success(
+                            f"저장: {info.get('count'):,}건 · 마지막페이지 {info.get('last_page')} · {done}"
+                        )
+                        st.json({k: meta.get(k) for k in ("collected", "pages", "totalCount", "complete", "last_page", "url", "resultCode") if k in (meta or {}) or True})
                     else:
                         st.error("수집 결과가 비었습니다. API 키·엔드포인트를 확인하세요.")
                         st.write(meta)
