@@ -856,15 +856,21 @@ def save_youth_file_cache(items: list):
     return {"path": str(YOUTH_CACHE_FILE), "count": payload["count"], "saved_at": payload["saved_at"]}
 
 
-def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages: int = 200, progress_cb=None):
+def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages: int = 2000, progress_cb=None):
     """
     청소년활동 API 전체 페이지 순회 수집.
-    totalCount 가 있으면 그 기준으로, 없으면 빈 페이지까지.
+    totalCount 가 있으면 그 기준으로, 없으면 빈 페이지·연속 실패까지.
+    ※ 공공 API는 페이지당 100~1000 제한인 경우가 많음 (5000 요청해도 잘림 가능)
     """
     all_items = []
     seen = set()
     last_meta = {}
     total = None
+    empty_streak = 0
+    page = 0
+    # API 과다 요청 방지: 페이지당 상한
+    num_of_rows = max(10, min(int(num_of_rows or 100), 1000))
+    max_pages = max(1, min(int(max_pages or 1), 5000))
     for page in range(1, max_pages + 1):
         part, meta = fetch_youth_singo_programs(
             service_key,
@@ -876,21 +882,25 @@ def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages
         last_meta = meta or {}
         if total is None and meta.get("totalCount") not in (None, ""):
             try:
-                total = int(meta.get("totalCount"))
+                total = int(str(meta.get("totalCount")).replace(",", ""))
             except Exception:
                 total = None
         if not part:
-            break
+            empty_streak += 1
+            if empty_streak >= 3:
+                break
+            time.sleep(0.3)
+            continue
+        empty_streak = 0
         for it in part:
             if not isinstance(it, dict):
                 continue
-            # 중복키
             key = (
-                str(it.get("prgrmNm") or it.get("pgmNm") or it.get("atName") or "")
+                str(it.get("prgrmNm") or it.get("pgmNm") or it.get("atName") or it.get("programNm") or "")
                 + "|"
-                + str(it.get("fcltyNm") or it.get("organNm") or it.get("orgName") or "")
+                + str(it.get("fcltyNm") or it.get("organNm") or it.get("orgName") or it.get("operInstNm") or "")
                 + "|"
-                + str(it.get("actvBgngYmd") or it.get("sdate") or "")
+                + str(it.get("actvBgngYmd") or it.get("sdate") or it.get("certNo") or "")
             )
             if key in seen:
                 continue
@@ -900,11 +910,15 @@ def fetch_youth_programs_all(service_key: str, num_of_rows: int = 100, max_pages
             progress_cb(page, len(all_items), total)
         if total is not None and len(all_items) >= total:
             break
+        # 마지막 페이지(요청보다 적게 옴)
         if len(part) < num_of_rows:
-            break
-        time.sleep(0.15)
+            # totalCount 가 더 있으면 계속, 없으면 종료
+            if total is None or len(all_items) >= total:
+                break
+        time.sleep(0.12)
     last_meta["collected"] = len(all_items)
-    last_meta["pages"] = page if 'page' in dir() else 0
+    last_meta["pages"] = page
+    last_meta["totalCount"] = total
     return all_items, last_meta
 
 
@@ -5314,8 +5328,36 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
             ykey = get_youth_api_key()
             if not ykey:
                 st.warning("YOUTH_ACTIV_KEY 또는 DATA_GO_KR_KEY 가 Secrets에 필요합니다.")
-            max_pages = st.number_input("최대 페이지", 1, 500, 100, key="youth_max_pages")
-            rows_pp = st.number_input("페이지당 건수", 10, 200, 100, key="youth_rows")
+            st.info(
+                "약 12만 건 기준 권장: **페이지당 100~1000** × **페이지 200~1500**. "
+                "API가 페이지당 5000을 거부하면 자동으로 1000 이하로 맞춥니다. "
+                "전체 수집은 수십 분 걸릴 수 있습니다."
+            )
+            c_a, c_b = st.columns(2)
+            with c_a:
+                max_pages = st.number_input(
+                    "최대 페이지",
+                    min_value=1,
+                    max_value=5000,
+                    value=1500,
+                    step=50,
+                    key="youth_max_pages",
+                    help="12만건 ÷ 페이지당건수 보다 여유 있게",
+                )
+            with c_b:
+                rows_pp = st.number_input(
+                    "페이지당 건수",
+                    min_value=10,
+                    max_value=1000,
+                    value=100,
+                    step=10,
+                    key="youth_rows",
+                    help="공공 API는 보통 100~1000 제한",
+                )
+            st.caption(
+                f"예상 최대 수집량: 약 {int(max_pages) * int(rows_pp):,} 건 "
+                f"(실제는 API totalCount에서 멈춤)"
+            )
             if st.button("청소년활동 전체 수집·캐시 저장", type="primary", key="btn_youth_scrape"):
                 if not ykey:
                     st.error("API 키가 없습니다.")
