@@ -896,6 +896,7 @@ def fetch_youth_programs_all(
     checkpoint_every: int = 10,
     sdate: str = "",
     edate: str = "",
+    endpoint_mode: str = "search_only",
 ):
     """
     청소년활동 API 전체 페이지 순회 수집.
@@ -926,6 +927,7 @@ def fetch_youth_programs_all(
             num_of_rows=num_of_rows,
             sdate=sdate or "",
             edate=edate or "",
+            endpoint_mode=endpoint_mode or "search_only",
         )
         last_meta = meta or {}
         if total is None and meta.get("totalCount") not in (None, ""):
@@ -972,17 +974,30 @@ def fetch_youth_programs_all(
         if total is not None and len(all_items) >= total:
             complete = True
             break
+        # totalCount 없을 때: 한 페이지가 짧다고 바로 종료하지 않음
+        # (Vol API·일부 API는 page 크기보다 적게 주면서도 다음 페이지가 있음)
         if len(part) < num_of_rows:
-            if total is None or len(all_items) >= (total or 0):
+            if total is not None and len(all_items) >= total:
                 complete = True
                 break
+            # total 미제공: 짧은 페이지 연속 시에만 종료 후보
+            empty_streak += 1
+            if empty_streak >= 3:
+                complete = True
+                break
+        else:
+            empty_streak = 0
         time.sleep(0.12)
 
+    # totalCount 없이 수집된 경우, max_pages 도달이 아니면 미완료로 표시 가능
+    if total is None and page >= max_pages:
+        complete = True
     last_meta["collected"] = len(all_items)
     last_meta["pages"] = page
     last_meta["totalCount"] = total
     last_meta["complete"] = complete
     last_meta["last_page"] = page
+    last_meta["endpoint_mode"] = endpoint_mode
     return all_items, last_meta
 
 
@@ -3426,7 +3441,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                KYWA 데이터 융복합 서비스</span></div>""",
+                한국청소년활동진흥원 · AI 업무지원 도구</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
@@ -3707,7 +3722,7 @@ if st.session_state.username == ADMIN_USER:
         st.sidebar.caption("아직 실행 기록이 없습니다.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("디지털정보부 · KYWA 데이터 융복합 서비스")
+st.sidebar.caption("디지털정보부 · 업무지원 도구")
 
 # ---------- 메인 ----------
 if tool == "🏠 처음 화면":
@@ -5444,15 +5459,37 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
             last_page = int((y_meta or {}).get("last_page") or 0)
             is_complete = bool((y_meta or {}).get("complete"))
             cached_n = int((y_meta or {}).get("count") or 0)
-            if cached_n and not is_complete:
+            if cached_n:
                 st.warning(
-                    f"이어받기 가능: 현재 캐시 **{cached_n:,}건** · 마지막 페이지 **{last_page}** "
-                    f"(완료 여부: {'완료' if is_complete else '미완료'})"
+                    f"캐시 **{cached_n:,}건** · 마지막 페이지 **{last_page}** · "
+                    f"상태: {'완료 표시' if is_complete else '미완료(이어받기 가능)'}"
                 )
+                if is_complete and cached_n < 20000:
+                    st.error(
+                        "완료로 표시되었지만 건수가 적습니다. "
+                        "이전 수집이 **봉사(Vol) API** 등으로 조기 종료됐을 수 있습니다. "
+                        "아래에서 **강제 이어받기** 또는 **처음부터(검색 API)** 를 사용하세요."
+                    )
             resume = st.checkbox(
-                "기존 캐시에서 이어받기 (체크 해제 시 처음부터)",
-                value=bool(cached_n and not is_complete),
+                "기존 캐시에서 이어받기",
+                value=bool(cached_n and (not is_complete or cached_n < 20000)),
                 key="youth_resume",
+            )
+            force_resume = st.checkbox(
+                "강제 이어받기 (complete=true 여도 다음 페이지부터 계속)",
+                value=False,
+                key="youth_force_resume",
+            )
+            endpoint_mode = st.selectbox(
+                "수집 API",
+                [
+                    "search_only (프로그램 검색 API · 권장)",
+                    "auto (검색→신고→봉사 순)",
+                    "singo_only (신고 프로그램)",
+                    "vol_only (봉사 · 비권장)",
+                ],
+                index=0,
+                key="youth_endpoint_mode",
             )
             ck_every = st.number_input(
                 "중간 저장 주기(페이지)",
@@ -5480,10 +5517,18 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
                             prog.progress(min(1.0, page / max(int(max_pages), 1)))
                     existing = []
                     start_page = 1
-                    if resume and y_all:
+                    do_resume = resume or force_resume
+                    if do_resume and y_all:
                         existing = list(y_all)
                         start_page = max(1, last_page + 1)
                         status.write(f"이어받기: {len(existing):,}건 보유 → {start_page}페이지부터")
+                    emode = "search_only"
+                    if "auto" in (endpoint_mode or ""):
+                        emode = "auto"
+                    elif "singo" in (endpoint_mode or ""):
+                        emode = "singo_only"
+                    elif "vol" in (endpoint_mode or ""):
+                        emode = "vol_only"
                     with st.spinner("청소년활동 API 수집 중… (중단해도 중간 저장분 유지)"):
                         items, meta = fetch_youth_programs_all(
                             ykey,
@@ -5495,6 +5540,7 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
                             checkpoint_every=int(ck_every),
                             sdate=(sdate_in or "").strip(),
                             edate=(edate_in or "").strip(),
+                            endpoint_mode=emode,
                         )
                     if items:
                         info = save_youth_file_cache(
