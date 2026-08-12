@@ -3184,12 +3184,14 @@ def result_card(title: str, body_markdown: str):
     st.markdown(body_markdown)
 
 
-def cm_h1(icon: str, roman: str, title: str):
-    """대목차: 아이콘 + 로마숫자"""
-    st.markdown(
-        f'<div class="cm-h1">{icon} {roman}. {title}</div>',
-        unsafe_allow_html=True,
-    )
+def cm_h1(icon: str, roman: str = "", title: str = ""):
+    """대목차: 아이콘 + 제목 (로마숫자 미사용)"""
+    # 호환: cm_h1(icon, title) 또는 cm_h1(icon, roman, title)
+    if title == "" and roman and not roman.startswith(("I", "V", "X")) and len(roman) > 2:
+        title = roman
+        roman = ""
+    label = f"{icon} {title}".strip()
+    st.markdown(f'<div class="cm-h1">{label}</div>', unsafe_allow_html=True)
 
 
 def cm_h2(num: str, title: str):
@@ -4544,11 +4546,6 @@ if st.session_state.logged_in:
         and not st.session_state.get("long_job", False)
         and not has_any_result()
         and tool not in (
-            "📋 업무관련 Q&A",
-            "📝 회의록 정리",
-            "📄 문서 요약 / 분석",
-            "✍️ 공문·보고서 초안 작성",
-            "📧 이메일 초안 작성",
             "🏕️ 수련시설 안전 및 인증프로그램 현황",
             "🧭 청소년 통합 지원 서비스",
             "🔗 KYWA 데이터 융복합 서비스",
@@ -4649,1057 +4646,11 @@ if tool == "🏠 처음 화면":
     st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
     st.info("왼쪽 메뉴에서 서비스를 선택하세요. 회원가입 후 관리자 승인이 필요합니다.")
 
-elif tool == "📄 문서 요약 / 분석":
-    page_header("📄 문서 요약 / 분석", "목적별 요약·분석 후 공문 초안으로 전달 가능")
-    show_examples([
-        "보고용으로 핵심만 요약",
-        "리스크·이슈 중심으로 정리",
-        "표·일정·금액만 추출",
-    ])
-    purpose = st.selectbox(
-        "요약 목적",
-        ["보고용 요약", "검토용 요약", "핵심만", "리스크·이슈 중심", "표·일정·금액만"],
-        key="sum_purpose",
-    )
-    tab1, tab2 = st.tabs(["파일 업로드", "텍스트 직접 입력"])
-    text_content = ""
-    with tab1:
-        uploaded_file = st.file_uploader("분석할 파일", type=["txt", "pdf", "docx"])
-        if uploaded_file is not None:
-            st.success(f"업로드됨: **{uploaded_file.name}**")
-            try:
-                text_content = extract_text_from_file(uploaded_file)
-                if text_content.strip():
-                    st.text_area("추출 미리보기", value=text_content[:3000], height=220)
-            except Exception as e:
-                st.error(f"파일 오류: {e}")
-    with tab2:
-        manual_text = st.text_area("요약할 텍스트", height=250)
-        if manual_text.strip():
-            text_content = manual_text
-    if st.button("AI로 요약/분석하기", type="primary", key="btn_doc_analyze"):
-        touch_session()
-        if not api_key:
-            st.warning("API 키가 없습니다.")
-        elif not text_content.strip():
-            st.warning("분석할 내용이 없습니다.")
-        else:
-            with st.spinner("분석 중..."):
-                try:
-                    result = get_ai_response(
-                        provider, api_key, "문서 요약 전문가",
-                        f"다음 문서를 [{purpose}] 관점으로 요약하세요.\n"
-                        f"공공기관 문체, 개조식(□ ○ -) 선호. 없는 사실 추가 금지.\n\n"
-                        f"{text_content[:12000]}"
-                    )
-                    st.session_state["doc_result"] = result
-                    inc_menu_count("문서 요약 / 분석")
-                    st.success("분석 완료")
-                except Exception as e:
-                    st.error(f"오류: {e}")
-    if st.session_state.get("doc_result"):
-        result_card("📋 AI 분석 결과", st.session_state["doc_result"])
-        if st.button("이 요약 → 공문·보고서 초안으로 가져가기", key="btn_to_draft"):
-            st.session_state["carry_summary"] = st.session_state["doc_result"]
-            st.success("가져가기 준비됨. 왼쪽에서 「공문·보고서 초안 작성」 메뉴를 선택하세요.")
 
-elif tool == "✍️ 공문·보고서 초안 작성":
-    page_header("✍️ 공문·보고서 초안 작성", "연도·기간 필수 · 개조식 · 다듬기 · 이메일 전달")
-    show_examples([
-        "2026년 공공데이터 품질관리 계획 초안",
-        "사업결과보고서(수행시기 명시)",
-    ])
-    doc_type = st.selectbox(
-        "문서 유형",
-        [
-            "전자결재 공문",
-            "전자문서 시행문",
-            "사업보고서 (주요사업 또는 연간계획)",
-            "사업결과보고서",
-            "사업보고서(일반보고서)",
-            "사업보고서(요약보고서)",
-        ],
-        key="doc_type_select",
-    )
-    title = st.text_input("제목 *", key="draft_title")
-    year = st.text_input("대상 연도 *", placeholder="예: 2026", key="draft_year")
-    period = st.text_input("수행시기 *", placeholder="예: 2026. 1. ~ 2026. 12.", key="draft_period")
-    dept = st.text_input("작성 부서", key="draft_dept")
-    default_points = st.session_state.get("carry_summary") or ""
-    key_points = st.text_area("주요 내용 *", value=default_points, height=160, key="draft_points")
 
-    c_draft, c_refine = st.columns(2)
-    with c_draft:
-        run_draft = st.button("AI로 초안 생성하기", type="primary", key="btn_doc_draft")
-    with c_refine:
-        run_refine = st.button("초안 다듬기 (개조식·구체화)", key="btn_draft_refine")
 
-    def _build_draft_prompt():
-        return f"""당신은 공공기관 공문·보고서 작성 전문가입니다.
-아래 조건에 맞는 {doc_type} 초안을 작성하세요.
 
-[사실·기간 엄수 규칙]
-1. 사용자가 입력한 연도·기간·날짜·숫자·부서명·사업명만 사용
-2. 입력에 없는 수행시기·예산·인원·실적을 임의로 만들지 말 것
-3. 수행시기·기간이 입력에 없으면 "확인 필요" 또는 공란으로 둘 것
-4. 제목·내용의 연도가 있으면 관련 시기도 같은 연도 기준으로만 작성
-5. 과거 연도(예: 2023년)를 예시로 넣지 말 것
-6. 대상 연도: {year} / 수행시기: {period} / 작성부서: {dept}
 
-[문체·표현 필수 규칙]
-1. 「합니다」「입니다」「됩니다」「있습니다」 등 합쇼체 금지
-2. 공문서 개조식 문체 사용
-   - 종결: ~할 계획임, ~하고자 함, ~필요, ~제고, ~점검, ~반영 등
-   - 또는 명사형 종결 / 「한다」체
-3. 항목 기호: □ 대항목, ○ 중항목, - 소항목
-4. 불필요한 인사말·맺음말 금지
-
-[분량·구성 규칙]
-1. 단순 요약이 아니라 실무 보고서로 쓸 수 있을 만큼 구체적으로 작성
-2. 각 □ 대항목 아래에 ○ 중항목을 3개 이상 작성
-3. 필요 시 ○ 아래에 - 소항목을 2개 이상 작성
-4. 일정·대상·방법·기대효과·협조사항 등 관련 항목을 빠짐없이 포함
-5. 사용자가 짧게 입력했어도 공공기관 보고서 수준으로 합리적으로 구체화
-6. 전체 분량은 최소 25줄 이상
-
-[권장 구성 예시]
-□ 추진 목적
-□ 추진 근거(또는 배경)
-□ 사업 개요
-□ 주요 내용(세부 과제별)
-□ 추진 일정
-□ 소요 예산(입력에 없으면 확인 필요 로 표시)
-□ 기대 효과
-□ 협조 및 요청사항
-
-[문서 유형]
-{doc_type}
-
-[제목]
-{title}
-
-[주요 내용]
-{key_points}
-※ 위 입력에 없는 연도·기간·수치는 생성하지 말 것.
-
-[출력]
-- 제목 + 본문만 출력
-- 위 문체·분량 규칙을 반드시 준수
-"""
-
-    if run_draft:
-        touch_session()
-        if not api_key:
-            st.warning("API 키가 없습니다.")
-        elif not title.strip() or not year.strip() or not period.strip() or not key_points.strip():
-            st.warning("제목, 대상 연도, 수행시기, 주요 내용은 필수입니다.")
-        else:
-            with st.spinner("작성 중..."):
-                try:
-                    result = get_ai_response(
-                        provider,
-                        api_key,
-                        "공공기관 공문서 개조식 작성 전문가. 합니다/입니다 체 사용 금지.",
-                        _build_draft_prompt(),
-                    )
-                    st.session_state["draft_result"] = result
-                    st.session_state["carry_summary"] = ""
-                    inc_menu_count("공문·보고서 초안 작성")
-                    st.success("초안 생성 완료")
-                except Exception as e:
-                    st.error(f"오류: {e}")
-
-    if run_refine and st.session_state.get("draft_result"):
-        touch_session()
-        if not api_key:
-            st.warning("API 키가 없습니다.")
-        else:
-            with st.spinner("다듬는 중..."):
-                try:
-                    refine_prompt = f"""다음 초안을 공공기관 개조식으로 다듬으세요.
-- ~합니다/~입니다 제거
-- 더 구체적으로, 하위항목 보강
-- 연도·기간은 원문 유지 (임의 변경 금지)
-
-초안:
-{st.session_state['draft_result']}
-"""
-                    result = get_ai_response(
-                        provider, api_key,
-                        "공문서 문체 교정 전문가",
-                        refine_prompt,
-                    )
-                    st.session_state["draft_result"] = result
-                    st.success("다듬기 완료")
-                except Exception as e:
-                    st.error(f"오류: {e}")
-
-    if st.session_state.get("draft_result"):
-        result_card("📄 생성된 초안", st.session_state["draft_result"])
-        if st.button("이 초안 → 이메일 본문으로 가져가기", key="btn_to_email"):
-            st.session_state["carry_draft"] = st.session_state["draft_result"]
-            st.success("가져가기 준비됨. 왼쪽에서 「이메일 초안 작성」 메뉴를 선택하세요.")
-
-elif tool == "📊 데이터 정리 도우미":
-    page_header("📊 데이터 정리 도우미", "원하는 정리·분석 항목을 선택한 뒤 실행하세요")
-
-    data_file = st.file_uploader("엑셀/CSV 업로드", type=["xlsx", "csv"], key="data_helper_upload")
-
-    if data_file is None:
-        st.info("엑셀(.xlsx) 또는 CSV 파일을 업로드하세요.")
-    else:
-        import pandas as pd
-        import numpy as np
-
-        try:
-            name = data_file.name.lower()
-            if name.endswith(".csv"):
-                raw = data_file.getvalue()  # bytes
-                df_raw = None
-                last_err = None
-                for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr", "ms949", "latin1"):
-                    try:
-                        df_raw = pd.read_csv(BytesIO(raw), encoding=enc)
-                        st.caption(f"CSV 인코딩: {enc}")
-                        break
-                    except Exception as e:
-                        last_err = e
-                if df_raw is None:
-                    raise ValueError(f"CSV 인코딩을 확인하세요. 마지막 오류: {last_err}")
-            else:
-                df_raw = pd.read_excel(data_file)
-        except Exception as e:
-            st.error(f"파일 읽기 오류: {e}")
-            st.stop()
-
-        # 파일 바뀌면 작업 데이터 초기화
-        if (
-            "data_df" not in st.session_state
-            or st.session_state.get("data_file_name") != data_file.name
-        ):
-            st.session_state["data_df"] = df_raw.copy()
-            st.session_state["data_df_original"] = df_raw.copy()
-            st.session_state["data_file_name"] = data_file.name
-            st.session_state["data_report"] = None
-
-        work = st.session_state["data_df"]
-        st.success(f"업로드됨: **{data_file.name}**  |  행 {work.shape[0]:,} × 열 {work.shape[1]:,}")
-
-        with st.expander("데이터 미리보기 (상위 30행)", expanded=False):
-            st.dataframe(work.head(30), use_container_width=True)
-
-        st.markdown("### 1) 실행할 작업 선택")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            opt_profile = st.checkbox("데이터 현황 요약", value=True)
-            opt_missing_info = st.checkbox("결측치 현황", value=True)
-            opt_missing_fix = st.checkbox("결측치 처리", value=False)
-        with c2:
-            opt_stats = st.checkbox("기초 통계", value=True)
-            opt_value_counts = st.checkbox("범주형 값 분포", value=False)
-            opt_corr = st.checkbox("숫자형 상관관계", value=False)
-        with c3:
-            opt_cols = st.checkbox("컬럼 정리", value=False)
-            opt_dedup = st.checkbox("중복 행 제거", value=False)
-            opt_replace = st.checkbox("값 치환", value=False)
-            opt_ai = st.checkbox("AI 인사이트 3줄", value=True)
-
-        st.markdown("### 2) 선택 항목 상세 설정")
-
-        # ---- 결측치 처리 설정 ----
-        missing_method = None
-        missing_cols = []
-        if opt_missing_fix:
-            with st.container():
-                st.caption("결측치 처리 설정")
-                miss_cols = work.columns[work.isna().any()].tolist()
-                missing_cols = st.multiselect(
-                    "결측 처리할 컬럼 (비우면 결측 있는 전체 컬럼)",
-                    options=list(work.columns),
-                    default=miss_cols,
-                    key="miss_cols",
-                )
-                missing_method = st.selectbox(
-                    "결측 처리 방법",
-                    [
-                        "삭제(해당 행 제거)",
-                        "채우기: 빈문자/0",
-                        "채우기: 평균(숫자형)",
-                        "채우기: 중앙값(숫자형)",
-                        "채우기: 최빈값",
-                        "채우기: 앞값(ffill)",
-                        "채우기: 뒷값(bfill)",
-                    ],
-                    key="miss_method",
-                )
-
-        # ---- 컬럼 정리 설정 ----
-        keep_cols = list(work.columns)
-        strip_names = False
-        if opt_cols:
-            st.caption("컬럼 정리 설정")
-            keep_cols = st.multiselect(
-                "남길 컬럼",
-                options=list(work.columns),
-                default=list(work.columns),
-                key="keep_cols_select",
-            )
-            strip_names = st.checkbox("컬럼명 앞뒤 공백 제거", value=True, key="strip_col_names")
-
-        # ---- 값 치환 설정 ----
-        rep_col = rep_old = rep_new = None
-        if opt_replace:
-            st.caption("값 치환 설정")
-            r1, r2, r3 = st.columns(3)
-            with r1:
-                rep_col = st.selectbox("치환 컬럼", options=list(work.columns), key="rep_col2")
-            with r2:
-                rep_old = st.text_input("찾을 값", key="rep_old2")
-            with r3:
-                rep_new = st.text_input("바꿀 값", key="rep_new2")
-
-        # ---- 범주형 분포 설정 ----
-        cat_sel = None
-        if opt_value_counts:
-            cat_cols = [c for c in work.columns if not pd.api.types.is_numeric_dtype(work[c])]
-            if cat_cols:
-                cat_sel = st.multiselect(
-                    "분포를 볼 범주형 컬럼",
-                    options=cat_cols,
-                    default=cat_cols[:1],
-                    key="cat_sel",
-                )
-            else:
-                st.caption("범주형 컬럼이 없습니다.")
-
-        st.markdown("### 3) 실행")
-        b1, b2, b3 = st.columns([1, 1, 2])
-        with b1:
-            run = st.button("선택 작업 실행", type="primary", key="btn_data_run")
-        with b2:
-            if st.button("원본으로 되돌리기", key="btn_data_reset"):
-                st.session_state["data_df"] = st.session_state["data_df_original"].copy()
-                st.session_state["data_report"] = None
-                st.success("원본으로 복원했습니다.")
-                st.rerun()
-
-        if run:
-            touch_session()
-            tmp = st.session_state["data_df"].copy()
-            report = {
-                "profile": None,
-                "missing_info": None,
-                "missing_applied": None,
-                "stats": None,
-                "value_counts": None,
-                "corr": None,
-                "col_clean": None,
-                "dedup": None,
-                "replace": None,
-                "shape_before": tmp.shape,
-            }
-
-            # 컬럼 정리
-            if opt_cols:
-                before_cols = list(tmp.columns)
-                if keep_cols:
-                    tmp = tmp[keep_cols]
-                if strip_names:
-                    tmp.columns = [str(c).strip() for c in tmp.columns]
-                report["col_clean"] = {
-                    "before": before_cols,
-                    "after": list(tmp.columns),
-                }
-
-            # 값 치환
-            if opt_replace and rep_col is not None:
-                cnt = int((tmp[rep_col].astype(str) == str(rep_old)).sum()) if rep_old is not None else 0
-                tmp[rep_col] = tmp[rep_col].replace(rep_old, rep_new)
-                report["replace"] = {
-                    "col": rep_col,
-                    "old": rep_old,
-                    "new": rep_new,
-                    "matched": cnt,
-                }
-
-            # 중복 제거
-            if opt_dedup:
-                before_n = len(tmp)
-                tmp = tmp.drop_duplicates()
-                report["dedup"] = {"removed": before_n - len(tmp)}
-
-            # 결측 처리
-            if opt_missing_fix:
-                cols = missing_cols if missing_cols else tmp.columns[tmp.isna().any()].tolist()
-                before_na = int(tmp[cols].isna().sum().sum()) if cols else 0
-                if missing_method == "삭제(해당 행 제거)":
-                    tmp = tmp.dropna(subset=cols) if cols else tmp.dropna()
-                elif missing_method == "채우기: 빈문자/0":
-                    for c in cols:
-                        if pd.api.types.is_numeric_dtype(tmp[c]):
-                            tmp[c] = tmp[c].fillna(0)
-                        else:
-                            tmp[c] = tmp[c].fillna("")
-                elif missing_method == "채우기: 평균(숫자형)":
-                    for c in cols:
-                        if pd.api.types.is_numeric_dtype(tmp[c]):
-                            tmp[c] = tmp[c].fillna(tmp[c].mean())
-                elif missing_method == "채우기: 중앙값(숫자형)":
-                    for c in cols:
-                        if pd.api.types.is_numeric_dtype(tmp[c]):
-                            tmp[c] = tmp[c].fillna(tmp[c].median())
-                elif missing_method == "채우기: 최빈값":
-                    for c in cols:
-                        mode = tmp[c].mode(dropna=True)
-                        if len(mode):
-                            tmp[c] = tmp[c].fillna(mode.iloc[0])
-                elif missing_method == "채우기: 앞값(ffill)":
-                    if cols:
-                        tmp[cols] = tmp[cols].ffill()
-                elif missing_method == "채우기: 뒷값(bfill)":
-                    if cols:
-                        tmp[cols] = tmp[cols].bfill()
-                after_na = int(tmp[cols].isna().sum().sum()) if cols else 0
-                report["missing_applied"] = {
-                    "method": missing_method,
-                    "cols": cols,
-                    "na_before": before_na,
-                    "na_after": after_na,
-                    "rows_before": report["shape_before"][0],
-                    "rows_after": len(tmp),
-                }
-
-            # 현황 요약 (처리 후 기준)
-            if opt_profile:
-                report["profile"] = pd.DataFrame({
-                    "컬럼": tmp.columns,
-                    "타입": [str(t) for t in tmp.dtypes],
-                    "결측수": tmp.isna().sum().values,
-                    "결측비율(%)": (tmp.isna().mean().values * 100).round(1),
-                    "고유값수": tmp.nunique(dropna=False).values,
-                })
-
-            if opt_missing_info:
-                miss = tmp.isna().sum()
-                miss = miss[miss > 0].sort_values(ascending=False)
-                if len(miss):
-                    report["missing_info"] = pd.DataFrame({
-                        "컬럼": miss.index,
-                        "결측수": miss.values,
-                        "결측비율(%)": (miss.values / max(len(tmp), 1) * 100).round(1),
-                    })
-                else:
-                    report["missing_info"] = "결측치 없음"
-
-            if opt_stats:
-                num_cols = tmp.select_dtypes(include=[np.number]).columns.tolist()
-                report["stats"] = tmp[num_cols].describe().T if num_cols else "숫자형 컬럼 없음"
-
-            if opt_value_counts and cat_sel:
-                vc_map = {}
-                for c in cat_sel:
-                    vc = tmp[c].astype(str).value_counts(dropna=False).head(20)
-                    vc_map[c] = pd.DataFrame({
-                        "값": vc.index,
-                        "건수": vc.values,
-                        "비율(%)": (vc.values / max(len(tmp), 1) * 100).round(1),
-                    })
-                report["value_counts"] = vc_map
-
-            if opt_corr:
-                num_cols = tmp.select_dtypes(include=[np.number]).columns.tolist()
-                report["corr"] = (
-                    tmp[num_cols].corr(numeric_only=True).round(3)
-                    if len(num_cols) >= 2 else "숫자형 컬럼이 2개 미만"
-                )
-
-            # C: AI 인사이트
-            report["ai"] = None
-            if opt_ai and api_key:
-                try:
-                    sample = tmp.head(25).to_csv(index=False)
-                    insight = get_ai_response(
-                        provider, api_key,
-                        "데이터 분석 보조. 3줄만 간결히.",
-                        f"다음 표 샘플을 보고 실무자가 주목할 점 3줄로 작성:\n{sample[:4000]}",
-                    )
-                    report["ai"] = insight
-                except Exception as e:
-                    report["ai"] = f"인사이트 생성 실패: {e}"
-
-            report["shape_after"] = tmp.shape
-            st.session_state["data_df"] = tmp
-            st.session_state["data_report"] = report
-            inc_menu_count("데이터 정리 도우미")
-            st.success("선택 작업 실행 완료")
-
-        # ---------- 결과 출력 (체크한 항목만) ----------
-        report = st.session_state.get("data_report")
-        if report:
-            st.markdown("---")
-            st.markdown("### 4) 실행 결과")
-            st.caption(
-                f"행 {report['shape_before'][0]:,}×열 {report['shape_before'][1]:,}  →  "
-                f"행 {report['shape_after'][0]:,}×열 {report['shape_after'][1]:,}"
-            )
-
-            if report.get("ai"):
-                result_card("🔍 AI 인사이트", report["ai"])
-
-            if report.get("col_clean") is not None:
-                st.markdown("#### 컬럼 정리")
-                st.write(
-                    f"컬럼 수: {len(report['col_clean']['before'])} → {len(report['col_clean']['after'])}"
-                )
-                st.write("유지 컬럼:", ", ".join(report["col_clean"]["after"]))
-
-            if report.get("replace") is not None:
-                st.markdown("#### 값 치환")
-                r = report["replace"]
-                st.write(
-                    f"`{r['col']}` 에서 '{r['old']}' → '{r['new']}' (일치 {r['matched']}건)"
-                )
-
-            if report.get("dedup") is not None:
-                st.markdown("#### 중복 행 제거")
-                st.write(f"제거된 행: {report['dedup']['removed']:,}건")
-
-            if report.get("missing_applied") is not None:
-                st.markdown("#### 결측치 처리")
-                m = report["missing_applied"]
-                st.write(f"방법: {m['method']}")
-                st.write(f"대상 컬럼: {', '.join(m['cols']) if m['cols'] else '(없음)'}")
-                st.write(
-                    f"결측 수: {m['na_before']:,} → {m['na_after']:,}  /  "
-                    f"행: {m['rows_before']:,} → {m['rows_after']:,}"
-                )
-
-            if report.get("profile") is not None:
-                st.markdown("#### 데이터 현황 요약")
-                st.dataframe(report["profile"], use_container_width=True, hide_index=True)
-
-            if report.get("missing_info") is not None:
-                st.markdown("#### 결측치 현황")
-                if isinstance(report["missing_info"], str):
-                    st.success(report["missing_info"])
-                else:
-                    st.dataframe(report["missing_info"], use_container_width=True, hide_index=True)
-
-            if report.get("stats") is not None:
-                st.markdown("#### 기초 통계")
-                if isinstance(report["stats"], str):
-                    st.caption(report["stats"])
-                else:
-                    st.dataframe(report["stats"], use_container_width=True)
-
-            if report.get("value_counts") is not None:
-                st.markdown("#### 범주형 값 분포")
-                for c, vdf in report["value_counts"].items():
-                    st.caption(f"컬럼: {c}")
-                    st.dataframe(vdf, use_container_width=True, hide_index=True)
-
-            if report.get("corr") is not None:
-                st.markdown("#### 숫자형 상관관계")
-                if isinstance(report["corr"], str):
-                    st.caption(report["corr"])
-                else:
-                    st.dataframe(report["corr"], use_container_width=True)
-
-            st.markdown("#### 결과 다운로드")
-            out_df = st.session_state["data_df"]
-            out = BytesIO()
-            with pd.ExcelWriter(out, engine="openpyxl") as writer:
-                out_df.to_excel(writer, index=False, sheet_name="정리데이터")
-            st.download_button(
-                "엑셀 다운로드 (실행 결과)",
-                data=out.getvalue(),
-                file_name="정리된_데이터.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                key="dl_xlsx_result",
-            )
-            st.download_button(
-                "CSV 다운로드",
-                data=out_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name="정리된_데이터.csv",
-                mime="text/csv",
-                key="dl_csv_result",
-            )
-
-
-elif tool == "📝 회의록 정리":
-    page_header("📝 회의록 정리", "텍스트/음성 → 회의록 정리 · 할 일만 추출")
-    show_examples([
-        "음성 업로드 후 결정·할 일 분리",
-        "메모를 안건별로 재구성",
-    ])
-
-    tab_text, tab_audio = st.tabs(["텍스트 입력", "음성 파일 업로드"])
-
-    with tab_text:
-        meeting_text = st.text_area(
-            "회의 내용",
-            value=st.session_state.get("meeting_transcript", ""),
-            height=250,
-            key="meeting_text_input",
-        )
-
-    with tab_audio:
-        st.caption("지원 형식: mp3, wav, m4a, webm, mp4 등 (OpenAI Whisper 사용)")
-        audio_file = st.file_uploader(
-            "음성 파일 업로드",
-            type=["mp3", "wav", "m4a", "webm", "mp4", "mpeg", "mpga"],
-            key="meeting_audio",
-        )
-        if audio_file is not None:
-            st.audio(audio_file)
-            if st.button("음성 → 텍스트 변환", type="primary", key="btn_transcribe"):
-                touch_session()
-                if not api_key:
-                    st.warning("API 키가 없습니다.")
-                elif provider != "OpenAI (ChatGPT)":
-                    st.warning("음성 변환은 OpenAI(Whisper) 선택 시 사용하세요.")
-                else:
-                    with st.spinner("음성 인식 중... (파일 길이에 따라 시간이 걸릴 수 있습니다)"):
-                        try:
-                            transcript = transcribe_audio_openai(api_key, audio_file)
-                            if not transcript:
-                                st.error("변환된 텍스트가 없습니다.")
-                            else:
-                                st.session_state["meeting_transcript"] = transcript
-                                st.success("음성 변환 완료. 아래 텍스트를 확인한 뒤 회의록 정리를 실행하세요.")
-                        except Exception as e:
-                            st.error(f"음성 변환 오류: {type(e).__name__}: {e}")
-
-        if st.session_state.get("meeting_transcript"):
-            st.text_area(
-                "변환된 텍스트 (수정 가능)",
-                value=st.session_state["meeting_transcript"],
-                height=220,
-                key="meeting_transcript_edit",
-            )
-            # 수정본 반영
-            if st.session_state.get("meeting_transcript_edit"):
-                st.session_state["meeting_transcript"] = st.session_state["meeting_transcript_edit"]
-
-    m1, m2 = st.columns(2)
-    with m1:
-        run_meeting = st.button("AI로 회의록 정리하기", type="primary", key="btn_meeting")
-    with m2:
-        run_actions = st.button("할 일만 추출", key="btn_meeting_actions")
-
-    if run_meeting:
-        touch_session()
-        content = (st.session_state.get("meeting_text_input") or "").strip()
-        if not content:
-            content = (st.session_state.get("meeting_transcript") or "").strip()
-        if not api_key:
-            st.warning("API 키가 없습니다.")
-        elif not content:
-            st.warning("회의 내용 텍스트 또는 음성 변환 결과가 필요합니다.")
-        else:
-            with st.spinner("회의록 정리 중..."):
-                try:
-                    result = get_ai_response(
-                        provider, api_key, "회의록 정리 전문가",
-                        "다음 회의 내용을 [주요 안건], [결정 사항], [할 일(담당/기한)], [특이사항] 형식으로 정리하세요.\n\n"
-                        + content,
-                    )
-                    st.session_state["meeting_result"] = result
-                    inc_menu_count("회의록 정리")
-                    st.success("정리 완료")
-                except Exception as e:
-                    st.error(f"오류: {e}")
-
-    if run_actions:
-        touch_session()
-        base = (st.session_state.get("meeting_result") or "").strip()
-        if not base:
-            base = (st.session_state.get("meeting_text_input") or "").strip()
-        if not base:
-            base = (st.session_state.get("meeting_transcript") or "").strip()
-        if not api_key:
-            st.warning("API 키가 없습니다.")
-        elif not base:
-            st.warning("정리할 회의 내용이 없습니다.")
-        else:
-            with st.spinner("할 일 추출 중..."):
-                try:
-                    result = get_ai_response(
-                        provider, api_key, "액션아이템 추출",
-                        "다음에서 할 일만 표 형식(할 일 | 담당 | 기한)으로 정리하세요. 없으면 '확인 필요'로 표시.\n\n"
-                        + base,
-                    )
-                    st.session_state["meeting_actions"] = result
-                    st.success("할 일 추출 완료")
-                except Exception as e:
-                    st.error(f"오류: {e}")
-
-    if st.session_state.get("meeting_result"):
-        result_card("📋 정리된 회의록", st.session_state["meeting_result"])
-    if st.session_state.get("meeting_actions"):
-        result_card("✅ 할 일", st.session_state["meeting_actions"])
-
-elif tool == "📧 이메일 초안 작성":
-    page_header("📧 이메일 초안 작성", "톤 선택 · 공문 초안 가져오기 가능")
-    show_examples([
-        "협조 요청 메일",
-        "공문 내용을 메일 본문으로 변환",
-    ])
-    tone = st.selectbox("톤", ["공식", "협조 요청", "내부 공유", "독촉"], key="mail_tone")
-    to_person = st.text_input("받는 사람", key="mail_to")
-    subject = st.text_input("제목", key="mail_subj")
-    default_body = st.session_state.get("carry_draft") or ""
-    content = st.text_area("핵심 내용", value=default_body, height=150, key="mail_body")
-    if st.button("AI로 이메일 초안 생성", type="primary", key="btn_email"):
-        touch_session()
-        if not api_key or not to_person or not subject or not content:
-            st.warning("필수 항목을 입력하세요.")
-        else:
-            with st.spinner("작성 중..."):
-                try:
-                    result = get_ai_response(
-                        provider, api_key, "업무 이메일 작성 전문가",
-                        f"톤:{tone}\n받는사람:{to_person}\n제목:{subject}\n내용:\n{content}\n"
-                        f"공공기관 업무 메일에 맞게 제목 제안과 본문을 작성하세요."
-                    )
-                    st.session_state["email_result"] = result
-                    st.session_state["carry_draft"] = ""
-                    inc_menu_count("이메일 초안 작성")
-                    st.success("초안 생성 완료")
-                except Exception as e:
-                    st.error(f"오류: {e}")
-    if st.session_state.get("email_result"):
-        result_card("📧 생성된 초안", st.session_state["email_result"])
-
-elif tool == "📋 업무관련 Q&A":
-    page_header("📋 업무관련 Q&A", "학습자료 기반 업무 질의응답 (규정/ERP 자동 분기)")
-
-    if st.session_state.get("reg_generating") and st.session_state.get("reg_progress") not in ("", "완료", "실패"):
-        if st.button("멈춘 작업 초기화", key="btn_reg_reset"):
-            st.session_state.reg_generating = False
-            st.session_state["reg_progress"] = ""
-            st.session_state["reg_error"] = "이전 작업이 초기화되었습니다."
-            st.rerun()
-
-    is_admin = st.session_state.username == ADMIN_USER
-
-    if is_admin:
-        st.markdown("### 학습자료 등록")
-        st.caption("관리자 전용 · 업무규정과 ERP 매뉴얼을 폴더/컬렉션으로 분리 저장합니다.")
-        data_kind = st.radio("자료 유형", ["업무규정/지침", "ERP 매뉴얼"], horizontal=True, key="reg_data_kind")
-        target_dir = ERP_DIR if data_kind == "ERP 매뉴얼" else REGS_DIR
-        collection_name = "kywa_erp" if data_kind == "ERP 매뉴얼" else "kywa_regs"
-        reg_file = st.file_uploader("학습자료 업로드", type=["pdf", "docx", "txt"], key="reg_upload")
-        if reg_file is not None:
-            st.write(f"선택 파일: **{reg_file.name}**")
-            st.caption(f"저장: `{target_dir}` / `{collection_name}` / `{canonical_source_name(reg_file.name)}`")
-            if st.button("로컬 인덱싱 실행", type="primary", key="btn_reg_index"):
-                touch_session()
-                if not api_key or provider != "OpenAI (ChatGPT)":
-                    st.warning("OpenAI API 키가 필요합니다.")
-                else:
-                    try:
-                        text = extract_text_from_file(reg_file)
-                        if not text.strip():
-                            st.error("텍스트 추출 실패")
-                        else:
-                            target_dir.mkdir(exist_ok=True)
-                            with open(target_dir / reg_file.name, "wb") as f:
-                                f.write(reg_file.getbuffer())
-                            source_name = canonical_source_name(reg_file.name)
-                            n = index_regulation_file(source_name, text, api_key, collection_name=collection_name)
-                            st.session_state["last_index_msg"] = f"인덱싱 완료: {reg_file.name} → {source_name} ({n}개)"
-                            st.success(st.session_state["last_index_msg"])
-                    except Exception as e:
-                        st.error(f"인덱싱 오류: {type(e).__name__}: {e}")
-
-        st.markdown("---")
-        st.markdown("### 일괄 인덱싱")
-        bulk_kind = st.radio("일괄 대상", ["업무규정/지침 (regs)", "ERP 매뉴얼 (regs_erp)"], horizontal=True, key="bulk_kind")
-        bulk_dir = ERP_DIR if "ERP" in bulk_kind else REGS_DIR
-        bulk_col = "kywa_erp" if "ERP" in bulk_kind else "kywa_regs"
-        retry_count = st.number_input("재시도 횟수", 0, 5, 2, 1, key="bulk_retry")
-        delay_sec = st.number_input("파일 사이 대기(초)", 0.0, 10.0, 0.8, 0.1, key="bulk_delay")
-        if st.button("선택 폴더 일괄 인덱싱 (최신본만)", type="primary", key="btn_reg_bulk_index"):
-            touch_session()
-            if not api_key or provider != "OpenAI (ChatGPT)":
-                st.warning("OpenAI API 키가 필요합니다.")
-            else:
-                files = []
-                for ext in ("*.pdf", "*.docx", "*.txt", "*.PDF", "*.DOCX", "*.TXT"):
-                    files.extend(bulk_dir.glob(ext))
-                files = sorted(set(files))
-                if not files:
-                    st.warning(f"{bulk_dir} 에 파일 없음")
-                else:
-                    latest_map = choose_latest_reg_files(files)
-                    selected = [v[1] for v in latest_map.values()]
-                    st.info(f"최신본 {len(selected)}개 / 컬렉션 {bulk_col}")
-
-                    class _F:
-                        def __init__(self, p: Path):
-                            self.name = p.name
-                            self._buf = BytesIO(p.read_bytes())
-                        def read(self, *a, **k):
-                            return self._buf.read(*a, **k)
-                        def seek(self, *a, **k):
-                            return self._buf.seek(*a, **k)
-                        def tell(self):
-                            return self._buf.tell()
-
-                    ok, fail, logs = 0, 0, []
-                    progress = st.progress(0.0)
-                    for i, path in enumerate(selected, 1):
-                        success = False
-                        for attempt in range(1, int(retry_count) + 2):
-                            try:
-                                text = extract_text_from_file(_F(path))
-                                if not text.strip():
-                                    raise ValueError("텍스트 없음")
-                                source_name = canonical_source_name(path.name)
-                                n = index_regulation_file(source_name, text, api_key, collection_name=bulk_col)
-                                logs.append(f"✅ {path.name} → {source_name} ({n})")
-                                ok += 1
-                                success = True
-                                break
-                            except Exception as e:
-                                logs.append(f"⚠️ {path.name} 시도{attempt}: {e}")
-                                time.sleep(1.0 * attempt)
-                        if not success:
-                            fail += 1
-                        progress.progress(i / len(selected))
-                        if i < len(selected):
-                            time.sleep(float(delay_sec))
-                    st.session_state["last_index_msg"] = f"일괄 완료: 성공 {ok} / 실패 {fail}"
-                    st.success(st.session_state["last_index_msg"])
-                    with st.expander("로그"):
-                        st.code("\n".join(logs[-40:]))
-
-        if st.session_state.get("last_index_msg"):
-            st.caption(st.session_state["last_index_msg"])
-        reg_saved = sorted([p.name for p in REGS_DIR.glob("*") if p.is_file()])
-        erp_saved = sorted([p.name for p in ERP_DIR.glob("*") if p.is_file()])
-        with st.expander(f"등록된 학습 자료 (규정 {len(reg_saved)} / ERP {len(erp_saved)})", expanded=False):
-            st.markdown("**업무규정/지침**")
-            st.write(", ".join(reg_saved) if reg_saved else "(없음)")
-            st.markdown("**ERP 매뉴얼**")
-            st.write(", ".join(erp_saved) if erp_saved else "(없음)")
-        st.markdown("---")
-
-    st.markdown("### 질의하기")
-    if not is_admin:
-        st.caption("학습자료 등록은 관리자만 가능합니다.")
-    show_examples([
-        "출장복명서 제출 기한이 궁금합니다",
-        "여비 정산 시 필요한 서류는?",
-        "ERP 지출결의 작성 방법이 궁금해요",
-    ])
-
-    qtype = st.radio(
-        "질문 유형",
-        ["일반", "신청", "취소", "변경", "기한", "서식", "결재선"],
-        horizontal=True,
-        key="qa_type",
-    )
-    question = st.text_input(
-        "업무 관련 질문",
-        placeholder="예: 출장복명서를 취소하려면 어떻게 하나요?",
-        key="qa_question_input",
-    )
-
-    if st.button("근거 기반 답변 생성", type="primary", key="btn_reg_ask"):
-        touch_session()
-        st.session_state.reg_generating = True
-        st.session_state["reg_answer"] = ""
-        st.session_state["reg_hits"] = []
-        st.session_state["reg_question"] = question
-        st.session_state["reg_rewritten"] = ""
-        st.session_state["reg_error"] = ""
-        st.session_state["reg_progress"] = "시작"
-        st.session_state["reg_route"] = ""
-
-        status_box = st.status("답변 생성 진행 중...", expanded=True)
-
-        try:
-            if not api_key:
-                raise ValueError("API 키가 없습니다.")
-            if provider != "OpenAI (ChatGPT)":
-                raise ValueError("OpenAI 선택 시 사용하세요.")
-            if not question.strip():
-                raise ValueError("질문을 입력하세요.")
-
-            ck = cache_key(f"{qtype}|{question}")
-            cached = st.session_state.qa_cache.get(ck)
-            if cached:
-                status_box.update(label="캐시 답변 사용", state="complete")
-                st.session_state["reg_answer"] = cached["answer"]
-                st.session_state["reg_hits"] = cached.get("hits", [])
-                st.session_state["reg_rewritten"] = cached.get("rewritten", "")
-                st.session_state["reg_route"] = cached.get("route", "")
-                st.session_state["reg_progress"] = "완료"
-                inc_menu_count("업무관련 Q&A")
-                st.success("캐시된 답변을 표시합니다.")
-            else:
-                status_box.update(label="1/3 질문 분석 중...", state="running")
-                rewritten = rewrite_question_for_search(
-                    provider, api_key, f"[{qtype}] {question}"
-                )
-                st.session_state["reg_rewritten"] = rewritten
-
-                type_extra = {
-                    "취소": " 취소 철회 취하 절차 서식",
-                    "변경": " 변경 수정 재신청",
-                    "신청": " 신청 제출 접수",
-                    "기한": " 기한 마감 기간 일정",
-                    "서식": " 서식 양식 첨부",
-                    "결재선": " 결재 결재선 합의",
-                }.get(qtype, "")
-                extra = type_extra
-                if any(k in question for k in ["잘못", "오신청", "취소", "변경", "어떻게", "처리", "방법"]):
-                    extra += " 취소신고 변경신청 재신청 사후결재 복명 결과보고 기한 서식 메뉴경로"
-
-                # 원 질문 핵심 고정
-                search_q = f"{question.strip()} {rewritten}{extra}".strip()
-                status_box.write(f"검색 질의: {search_q}")
-
-                status_box.update(label="2/3 자료 검색 중...", state="running")
-                hits, used_col = search_auto_route(question, search_q, api_key)
-                hits = prefer_hits_by_question(hits, question)
-                st.session_state["reg_route"] = used_col
-                route_label = "ERP 매뉴얼" if used_col == "kywa_erp" else "업무규정/지침"
-                status_box.write(f"검색 범위: **{route_label}**")
-
-                if not hits:
-                    raise ValueError(f"관련 자료를 찾지 못했습니다. ({route_label})")
-                status_box.write(f"검색 조각: {len(hits)}개")
-
-                status_box.update(label="3/3 답변 작성 중...", state="running")
-                context = "\n\n".join(
-                    [f"[출처: {m.get('source')} / 조각 {m.get('chunk')}]\n{d}" for d, m in hits]
-                )
-
-                prompt = f"""당신은 공공기관 실무 업무 도우미입니다.
-아래 학습자료 발췌만 근거로 답변하세요.
-
-[엄수 규칙]
-1. 학습자료 발췌에 있는 내용만 사용할 것
-2. 자료에 없는 메뉴경로, 결재라인, 기한, 서식명은 절대 추측하지 말 것
-3. 없으면 "학습자료에서 확인되지 않음(담당부서 확인 필요)"으로 명시
-4. 질문의 핵심 문서명과 다른 문서 절차를 질문 문서 절차처럼 바꿔 쓰지 말 것
-5. 유사 문서는 "참고(유사 절차)"로만 분리하고 동일하다고 단정하지 말 것
-6. 자료에 있는 메뉴 경로·서식명·기한만 포함할 것
-7. 질문 유형: {qtype}
-
-형식:
-**[제목]**
-**개요**
-**1. 단계명** (자료에 있는 세부·경로·기한만)
-**2. ...**
-**필요 서류/서식**
-**주의사항**
-**근거 요약** (출처 파일명 포함)
-**확인 필요사항**
-
-[검색 범위] {route_label}
-[학습자료 발췌]
-{context}
-[질문]
-{question}
-"""
-                answer = get_ai_response(
-                    provider,
-                    api_key,
-                    "공공기관 업무 Q&A 보조 전문가. 근거 없는 추측 금지.",
-                    prompt,
-                )
-                if not answer or not str(answer).strip():
-                    raise ValueError("AI가 빈 답변을 반환했습니다.")
-
-                st.session_state["reg_answer"] = answer
-                st.session_state["reg_hits"] = hits
-                st.session_state["reg_progress"] = "완료"
-                st.session_state.qa_cache[ck] = {
-                    "answer": answer,
-                    "hits": hits,
-                    "rewritten": rewritten,
-                    "route": used_col,
-                }
-                inc_menu_count("업무관련 Q&A")
-                status_box.update(label="완료", state="complete")
-                st.success("답변 생성 완료")
-
-        except Exception as e:
-            st.session_state["reg_error"] = f"실패: {type(e).__name__}: {e}"
-            st.session_state["reg_progress"] = "실패"
-            try:
-                status_box.update(label="실패", state="error")
-            except Exception:
-                pass
-            st.error(st.session_state["reg_error"])
-        finally:
-            st.session_state.reg_generating = False
-
-    if st.session_state.get("reg_progress"):
-        st.caption(f"상태: {st.session_state['reg_progress']}")
-    if st.session_state.get("reg_route"):
-        lab = "ERP 매뉴얼" if st.session_state["reg_route"] == "kywa_erp" else "업무규정/지침"
-        st.caption(f"검색 범위: {lab}")
-    if st.session_state.get("reg_error"):
-        st.error(st.session_state["reg_error"])
-    if st.session_state.get("reg_answer"):
-        st.markdown("---")
-        st.caption(f"질문: {st.session_state.get('reg_question', '')}")
-        if st.session_state.get("reg_rewritten"):
-            st.caption(f"검색 질의: {st.session_state.get('reg_rewritten', '')}")
-        result_card("📘 답변", st.session_state["reg_answer"])
-        hits = st.session_state.get("reg_hits") or []
-        if hits:
-            chips = " ".join(
-                f'<span class="src-chip">{(m or {}).get("source", "?")} #{(m or {}).get("chunk", "")}</span>'
-                for _, m in hits[:10]
-            )
-            st.markdown(f"**근거 출처** {chips}", unsafe_allow_html=True)
-            with st.expander("참고한 학습자료 발췌"):
-                for i, (d, m) in enumerate(hits, 1):
-                    st.markdown(f"**{i}. {m.get('source')} (조각 {m.get('chunk')})**")
-                    st.write(d)
-        st.caption(
-            "※ 본 답변은 학습된 규정·안내 자료 기반입니다. "
-            "메뉴 경로·결재선·서식은 자료에 있는 것만 반영하며, "
-            "자료에 없는 내용은 담당 부서 확인이 필요합니다."
-        )
-        # D: 평가
-        fb1, fb2, fb3 = st.columns(3)
-        with fb1:
-            if st.button("👍 도움됨", key="fb_good"):
-                fb = load_feedback()
-                fb["ratings"].append({
-                    "ts": datetime.now().isoformat(timespec="seconds"),
-                    "user": st.session_state.username,
-                    "q": st.session_state.get("reg_question", ""),
-                    "helpful": True,
-                })
-                save_feedback(fb)
-                st.success("피드백 감사합니다.")
-        with fb2:
-            if st.button("👎 도움 안 됨", key="fb_bad"):
-                fb = load_feedback()
-                item = {
-                    "ts": datetime.now().isoformat(timespec="seconds"),
-                    "user": st.session_state.username,
-                    "q": st.session_state.get("reg_question", ""),
-                    "helpful": False,
-                    "answer_preview": (st.session_state.get("reg_answer") or "")[:400],
-                }
-                fb["ratings"].append(item)
-                fb["bad_questions"].append(item)
-                save_feedback(fb)
-                st.warning("개선에 활용하겠습니다.")
-        with fb3:
-            if st.button("캐시 비우기", key="fb_clear_cache"):
-                st.session_state.qa_cache = {}
-                st.info("캐시를 비웠습니다.")
 
 elif tool == "🔐 관리자 · 가입승인 / 비밀번호":
     page_header("🔐 관리자 · 가입승인 / 비밀번호", "관리자 전용")
@@ -7259,7 +6210,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
         # I. 진로 분석
         if st.session_state.get("career_guide"):
-            cm_h1("🧭", roman[sec], "진로 분석")
+            cm_h1("🧭", "", "진로 분석")
             sec += 1
             st.markdown('<div class="cm-analysis-box cm-indent">', unsafe_allow_html=True)
             # 하위 ## 제목이 메인보다 커지지 않도록 HTML로 완만히 변환
@@ -7295,7 +6246,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
         )
 
         # II. 관련 직업
-        cm_h1("💼", roman[sec], "관련 직업")
+        cm_h1("💼", "", "관련 직업")
         sec += 1
         c_jobs = st.session_state.get("career_jobs") or []
         if not c_jobs:
@@ -7310,7 +6261,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 cm_card(f"{i}. {nm}", body=body, meta=meta)
 
         # III. 관련 학과
-        cm_h1("🎓", roman[sec], "관련 학과")
+        cm_h1("🎓", "", "관련 학과")
         sec += 1
         majors = st.session_state.get("career_majors") or []
         majors_all = st.session_state.get("career_majors_all") or []
@@ -7353,7 +6304,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
         # IV. 진학 조언
         if st.session_state.get("career_admission"):
-            cm_h1("📌", roman[sec], "진학 조언")
+            cm_h1("📌", "", "진학 조언")
             sec += 1
             st.markdown('<div class="cm-card cm-indent">', unsafe_allow_html=True)
             st.markdown(st.session_state["career_admission"])
@@ -7362,7 +6313,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
         # V. 진로솔루션 참고 (정리된 카드)
         jinsol_hits = st.session_state.get("career_jinsol") or []
         if jinsol_hits:
-            cm_h1("📘", roman[sec], "진로솔루션 참고")
+            cm_h1("📘", "", "진로솔루션 참고")
             sec += 1
             for i, j in enumerate(jinsol_hits[:4], 1):
                 title = j.get("job_nm") or "자료"
@@ -7403,7 +6354,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
         # VI. 관련 학교
         schools = st.session_state.get("career_schools") or []
-        cm_h1("🏫", roman[sec], "관련 학교 정보")
+        cm_h1("🏫", "", "관련 학교 정보")
         sec += 1
         if not schools:
             cm_empty("관심·지역에 맞는 학교 정보가 없거나 매칭되지 않았습니다.")
@@ -7420,7 +6371,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
         # VII. 진로교육자료
         cose_list = st.session_state.get("career_cose") or []
-        cm_h1("📚", roman[sec], "진로교육자료")
+        cm_h1("📚", "", "진로교육자료")
         sec += 1
         if not cose_list:
             cm_empty("관련 진로교육자료가 없습니다.")
@@ -7474,7 +6425,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 )
 
         # VIII. 진로체험·교육
-        cm_h1("🎯", roman[sec], "진로체험 및 진로교육 추천")
+        cm_h1("🎯", "", "진로체험 및 진로교육 추천")
         sec += 1
         g_hits = st.session_state.get("career_ggomgil") or []
         if not g_hits:
@@ -7518,7 +6469,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             _show_exp_table("2.", "진로교육", edu_rows)
 
         # IX. 청소년활동
-        cm_h1("🌱", roman[min(sec, len(roman)-1)], "관련 추천 청소년활동")
+        cm_h1("🌱", "", "관련 추천 청소년활동")
         y_hits = st.session_state.get("career_youth") or []
         user_region = (st.session_state.get("career_profile") or {}).get("region") or ""
         if not y_hits:
@@ -7568,7 +6519,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
 
         # IX. 복지혜택
-        cm_h1("🏛️", roman[min(sec, len(roman)-1)], "복지혜택 안내")
+        cm_h1("🏛️", "", "복지혜택 안내")
         sec += 1
         prof = st.session_state.get("career_profile") or {}
         user_region = (prof.get("region") or "").strip()
@@ -7644,7 +6595,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             st.caption("※ 수급 가능 여부는 복지로·지자체에서 최종 확인하세요.")
 
         # X. 지도 — 진로체험 + 청소년활동 (시·도 필터, 주소→좌표)
-        cm_h1("🗺️", roman[min(sec, len(roman)-1)], "지역 활동 · 체험 지도")
+        cm_h1("🗺️", "", "지역 활동 · 체험 지도")
         sec += 1
         sido_tok = region_sido_token(user_region)
         map_points = []
@@ -7697,22 +6648,67 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     "type": "청소년활동",
                     "addr": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
                 })
+        # 시·도 필터로 0건이면 필터 완화 재시도(지오코딩만)
+        if not map_points and (st.session_state.get("career_ggomgil") or st.session_state.get("career_youth")):
+            for row in (st.session_state.get("career_ggomgil") or [])[:20]:
+                if not isinstance(row, dict):
+                    continue
+                area = str(row.get("체험지역명") or "")
+                place = str(row.get("체험처명") or "")
+                title = str(row.get("체험프로그램명") or place)
+                lat, lng = row.get("위도"), row.get("경도")
+                try:
+                    lat = float(lat) if lat not in (None, "") else None
+                    lng = float(lng) if lng not in (None, "") else None
+                except Exception:
+                    lat = lng = None
+                if not lat or not lng:
+                    lat, lng, _ = resolve_lat_lon({"addr1": area, "fcltyNm": place or title, "ctpvNm": sido_tok})
+                if lat and lng:
+                    map_points.append({"lat": lat, "lon": lng, "name": title or place, "type": "진로체험·교육", "addr": f"{place} {area}".strip()})
+            for row in (st.session_state.get("career_youth") or [])[:20]:
+                if not isinstance(row, dict):
+                    continue
+                info = normalize_youth_program(row)
+                lat, lon, _ = resolve_lat_lon({
+                    "fcltyNm": info.get("facility"), "addr1": info.get("addr"),
+                    "ctpvNm": info.get("sido") or sido_tok, "sggNm": info.get("sgg"),
+                    "prgrmNm": info.get("name"),
+                })
+                if lat and lon:
+                    map_points.append({
+                        "lat": lat, "lon": lon,
+                        "name": info.get("name") or info.get("facility") or "활동",
+                        "type": "청소년활동",
+                        "addr": info.get("addr") or "",
+                    })
+
         if not map_points:
             cm_empty(
-                "지도에 표시할 좌표를 만들지 못했습니다. "
-                + (f"(기준 시·도: {sido_tok or '미확인'}) " if True else "")
-                + "접속 위치가 없거나 지오코딩 키(KAKAO/VWORLD)를 확인해 주세요."
+                f"지도에 표시할 좌표가 없습니다. (기준 시·도: {sido_tok or user_region or '미확인'}) "
+                "꿈길/청소년활동 데이터·지오코딩 키(KAKAO_REST_KEY 또는 VWORLD_API_KEY)를 확인하세요."
             )
         else:
             import pandas as pd
             dfm = pd.DataFrame(map_points)
+            # st.map 호환: lat/lon 컬럼
+            plot_df = dfm.rename(columns={"lat": "lat", "lon": "lon"})[["lat", "lon"]].dropna()
             st.caption(f"시·도 기준: **{sido_tok or user_region or '전국'}** · 표시 {len(map_points)}곳")
-            st.map(dfm, latitude="lat", longitude="lon", size=50, zoom=10)
+            try:
+                st.map(plot_df, zoom=10)
+            except TypeError:
+                try:
+                    st.map(plot_df)
+                except Exception as e:
+                    st.warning(f"지도 렌더링 오류: {e}")
+            # 상세 표 + 네이버 링크
             st.dataframe(
                 pd.DataFrame([{
                     "구분": p["type"],
                     "프로그램/시설명": p["name"],
                     "위치": p.get("addr") or "",
+                    "위도": p.get("lat"),
+                    "경도": p.get("lon"),
                     "지도": naver_map_link(p["lat"], p["lon"], p["name"]) or naver_map_search_link(p.get("addr") or p["name"]),
                 } for p in map_points]),
                 use_container_width=True,
