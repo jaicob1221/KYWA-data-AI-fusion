@@ -3099,6 +3099,84 @@ def detect_region_from_ip():
             return out
 
 
+
+def extract_bracket_region(title: str) -> str:
+    """프로그램명 앞 [경기북부], [전남·제주] 등 권역 표기 추출"""
+    import re
+    t = str(title or "")
+    m = re.search(r"\[([^\]]+)\]", t)
+    if not m:
+        return ""
+    return m.group(1).strip()
+
+
+def normalize_region_tokens(text: str) -> list:
+    """지역 문자열 → 매칭용 토큰 목록"""
+    s = str(text or "")
+    if not s:
+        return []
+    # 구분 기호 통일
+    for ch in ("·", ",", "/", "|", " "):
+        s = s.replace(ch, " ")
+    parts = [p.strip() for p in s.split() if p.strip()]
+    keys = []
+    mapping = [
+        ("서울", "서울"), ("부산", "부산"), ("대구", "대구"), ("인천", "인천"),
+        ("광주", "광주"), ("대전", "대전"), ("울산", "울산"), ("세종", "세종"),
+        ("경기", "경기"), ("강원", "강원"), ("충북", "충북"), ("충남", "충남"),
+        ("전북", "전북"), ("전남", "전남"), ("경북", "경북"), ("경남", "경남"), ("제주", "제주"),
+    ]
+    blob = str(text or "")
+    for key, tok in mapping:
+        if key in blob:
+            keys.append(tok)
+    # 괄호 안 세부 (북부/남부 등)도 유지
+    for p in parts:
+        if p not in keys and len(p) >= 2:
+            keys.append(p)
+    return keys
+
+
+def program_service_region(row: dict, title: str = "") -> str:
+    """
+    실제 서비스/모집 권역.
+    우선순위: 제목 [권역] > 체험지역명 > 주소 시도
+    (운영기관 본사 주소와 분리)
+    """
+    title = title or str(row.get("체험프로그램명") or row.get("프로그램명") or "")
+    br = extract_bracket_region(title)
+    if br:
+        return br
+    area = str(row.get("체험지역명") or row.get("지역") or "").strip()
+    if area:
+        return area
+    return ""
+
+
+def regions_compatible(program_region: str, user_region: str) -> bool:
+    """프로그램 권역과 사용자 시·도 호환 여부"""
+    u = (user_region or "").strip()
+    if not u:
+        return True
+    p = (program_region or "").strip()
+    if not p:
+        return False  # 권역 불명이면 본사 주소로 서울 찍히는 오탐 방지 → 제외
+    ut = set(normalize_region_tokens(u))
+    pt = set(normalize_region_tokens(p))
+    if not ut:
+        return True
+    if ut & pt:
+        return True
+    # 상호 포함
+    for a in ut:
+        if a in p:
+            return True
+    for a in pt:
+        if a in u:
+            return True
+    return False
+
+
 def region_sido_token(region: str) -> str:
     """시·도 단위 토큰 (지도 필터용)"""
     ctpv, sgg = split_region_ctpv_sgg(region or "")
@@ -6668,66 +6746,105 @@ elif tool == "🧭 청소년 통합 지원 서비스":
         sido_tok = region_sido_token(user_region)
         map_points = []
 
-        # 1) 꿈길: 진로체험 / 진로교육 구분
+        # 1) 꿈길: 진로체험 / 진로교육 (운영 권역 기준, 본사 주소와 분리)
         for row in (st.session_state.get("career_ggomgil") or []):
             if not isinstance(row, dict):
                 continue
-            area = str(row.get("체험지역명") or row.get("지역") or "")
             place = str(row.get("체험처명") or row.get("운영기관명") or "")
             title = str(row.get("체험프로그램명") or row.get("프로그램명") or row.get("제목") or place)
-            blob = f"{area} {place} {title}"
-            if sido_tok and sido_tok not in blob and not region_matches_user(blob, user_region):
+            svc_region = program_service_region(row, title)
+            area = svc_region or str(row.get("체험지역명") or row.get("지역") or "")
+            # 사용자 시·도와 프로그램 권역이 맞을 때만 (예: [전남·제주] ≠ 서울)
+            if user_region and not regions_compatible(svc_region or area, user_region):
                 continue
-            # 관심사 관련성 (축구→공예 같은 오매칭 방지)
+            if sido_tok and svc_region and not regions_compatible(svc_region, sido_tok):
+                continue
+            blob = f"{area} {place} {title} {row.get('체험프로그램 직업유형') or ''}"
             _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
             if isinstance(_ints, str):
                 _ints = [_ints]
-            if _ints and not text_matches_interest(blob + " " + str(row.get("체험프로그램 직업유형") or ""), _ints, min_hits=1):
+            if _ints and not text_matches_interest(blob, _ints, min_hits=1):
                 continue
             try:
                 bucket = classify_ggomgil_bucket(row)
             except Exception:
                 bucket = "체험"
-            title0 = title
-            meta0 = str(row.get("체험유형") or row.get("체험프로그램 직업유형") or "")
-            if bucket == "교육":
-                kind = "진로교육"
-            else:
-                kind = classify_map_item_type(title0, meta0, source="ggomgil")
-                if kind == "청소년활동":
-                    kind = "진로체험"
+            # 꿈길 데이터만 진로체험/진로교육
+            kind = "진로교육" if bucket == "교육" else "진로체험"
             lat, lng = row.get("위도"), row.get("경도")
             try:
                 lat = float(lat) if lat not in (None, "") else None
                 lng = float(lng) if lng not in (None, "") else None
             except Exception:
                 lat = lng = None
+            # 좌표: 권역·체험지역 우선 (본사 서울 좌표 오용 방지)
             if not lat or not lng:
-                lat, lng, _ = resolve_lat_lon({
-                    "addr1": area, "fcltyNm": place or title, "ctpvNm": sido_tok,
-                })
+                geo_q = {
+                    "addr1": area or svc_region,
+                    "fcltyNm": (place if area and sido_tok and regions_compatible(area, sido_tok) else "") or area,
+                    "ctpvNm": sido_tok or "",
+                }
+                lat, lng, _ = resolve_lat_lon(geo_q)
+            # 여전히 없고 권역이 사용자와 다르면 스킵 (서울 본사 좌표로 찍지 않음)
+            if lat and lng and svc_region and user_region:
+                # 좌표는 있어도 권역 불일치면 이미 continue 함
+                pass
             if lat and lng:
+                disp_addr = " · ".join(x for x in [svc_region or area, place] if x)
                 map_points.append({
                     "lat": lat, "lon": lng,
                     "name": title or place,
                     "type": kind,
-                    "addr": f"{place} {area}".strip(),
+                    "addr": disp_addr,
                     "meta": str(row.get("체험유형") or row.get("체험프로그램 직업유형") or ""),
                 })
 
-        # 2) 청소년활동
-        for row in (st.session_state.get("career_youth") or []):
+        # 2) 청소년활동 (여가부 데이터만) — 시·도 일치 + 관심 키워드
+        youth_rows = list(st.session_state.get("career_youth") or [])
+        # 세션 후보가 없거나 지역 불일치로 비면 캐시에서 시·도+관심으로 재검색
+        def _youth_ok(r):
+            if not isinstance(r, dict):
+                return False
+            info = normalize_youth_program(r)
+            blob = " ".join(x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x)
+            if (user_region or sido_tok) and not (
+                regions_compatible(blob, user_region or sido_tok) or region_matches_user(blob, user_region or sido_tok)
+            ):
+                return False
+            return True
+        youth_rows = [r for r in youth_rows if _youth_ok(r)]
+        if len(youth_rows) < 3:
+            try:
+                y_all, _ym = load_youth_file_cache()
+            except Exception:
+                y_all = []
+            _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
+            if isinstance(_ints, str):
+                _ints = [_ints]
+            if y_all:
+                extra = filter_youth_cache_by_keywords(
+                    y_all, _ints or ["체험"], region=user_region or sido_tok, school=str((st.session_state.get("career_profile") or {}).get("school") or ""), limit=30
+                )
+                for r in extra or []:
+                    if _youth_ok(r) and r not in youth_rows:
+                        youth_rows.append(r)
+        if not youth_rows:
+            st.caption("해당 시·도에서 관심사와 맞는 청소년활동을 찾지 못했습니다. (캐시·키워드 확인)")
+        for row in youth_rows:
             if not isinstance(row, dict):
                 continue
             info = normalize_youth_program(row)
             blob = " ".join(
                 x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x
             )
-            if blob and sido_tok and not region_matches_user(blob, user_region) and sido_tok not in blob:
-                continue
+            # 서울특별시 ↔ 서울 매칭
+            if user_region or sido_tok:
+                if not regions_compatible(blob, user_region or sido_tok) and not region_matches_user(blob, user_region or sido_tok):
+                    continue
             _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
             if isinstance(_ints, str):
                 _ints = [_ints]
+            # 관심 매칭 (확장 키워드). 너무 엄격하면 서울 활동 0건 → min_hits 유지하되 core 매칭
             if _ints and not text_matches_interest(blob, _ints, min_hits=1):
                 continue
             lat, lon, _ = resolve_lat_lon({
