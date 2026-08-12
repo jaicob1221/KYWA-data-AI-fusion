@@ -1005,59 +1005,156 @@ def fetch_youth_programs_all(
     return all_items, last_meta
 
 
-def filter_youth_cache_by_keywords(items: list, keywords: list, region: str = "", limit: int = 40):
-    """캐시에서 키워드·지역 1차 필터"""
+def _school_to_target_tokens(school: str) -> list:
+    """교급 → 대상 연령/학년 매칭용 토큰"""
+    s = str(school or "")
+    tokens = []
+    if any(x in s for x in ("초", "초등", "4학년", "5학년", "6학년", "3학년", "2학년", "1학년")) and "중" not in s and "고" not in s:
+        tokens += ["초등", "초등학생", "어린이", "아동", "초1", "초2", "초3", "초4", "초5", "초6", "저학년", "고학년"]
+    if any(x in s for x in ("중", "중학", "중학생")):
+        tokens += ["중학", "중학생", "청소년", "중1", "중2", "중3"]
+    if any(x in s for x in ("고", "고등", "고등학생")):
+        tokens += ["고등", "고등학생", "청소년", "고1", "고2", "고3"]
+    if not tokens:
+        tokens += ["청소년", "초등", "중학", "학생"]
+    return tokens
+
+
+def _interest_type_tokens(keywords: list) -> list:
+    """관심 키워드 → 유사 활동유형/영역 토큰 (프로그램명 일치가 약할 때 보완)"""
+    blob = " ".join(str(k) for k in (keywords or []))
+    types = []
+    rules = [
+        (("요리", "조리", "베이킹", "제빵", "셰프", "쿠킹", "음식", "푸드"), ["요리", "조리", "제빵", "베이킹", "음식", "급식", "바리스타", "커피", "체험"]),
+        (("새", "조류", "동물", "생물", "자연", "생태", "환경", "식물"), ["자연", "생태", "환경", "동물", "탐방", "숲", "체험", "과학"]),
+        (("로봇", "코딩", "AI", "인공지능", "소프트웨어", "컴퓨터", "IT"), ["로봇", "코딩", "소프트웨어", "AI", "정보", "과학", "메이커", "SW"]),
+        (("미술", "그림", "디자인", "공예", "예술", "음악", "댄스", "연극"), ["미술", "예술", "공예", "문화", "음악", "공연", "체험"]),
+        (("운동", "체육", "축구", "농구", "수영", "스포츠"), ["체육", "스포츠", "운동", "캠프", "체험"]),
+        (("역사", "문화", "전통", "박물관"), ["역사", "문화", "전통", "탐방", "체험", "인문"]),
+        (("진로", "직업", "꿈"), ["진로", "직업", "체험", "캠프"]),
+    ]
+    for keys, vals in rules:
+        if any(k in blob for k in keys):
+            types.extend(vals)
+    if not types and keywords:
+        types = [str(k) for k in keywords if k][:8]
+    # 공통 완화 토큰
+    types += ["체험", "활동", "캠프", "프로그램"]
+    # 중복 제거
+    out, seen = [], set()
+    for t in types:
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def filter_youth_cache_by_keywords(
+    items: list,
+    keywords: list,
+    region: str = "",
+    school: str = "",
+    limit: int = 60,
+):
+    """
+    캐시 1차 후보 선별 (완화 버전)
+    - 관심 키워드 (프로그램명·유형·개요)
+    - 동일 지역
+    - 대상 연령대(교급)
+    - 유사 유형
+    하나라도 맞으면 후보에 포함, 점수로 정렬
+    """
     kws = [str(k).strip() for k in (keywords or []) if str(k).strip()]
-    kws = expand_interest_keywords(kws) if kws else []
+    try:
+        kws = expand_interest_keywords(kws) if kws else []
+    except Exception:
+        pass
+    type_tokens = _interest_type_tokens(kws)
+    age_tokens = _school_to_target_tokens(school)
+
     region_tokens = []
     if region:
         region_tokens.append(region)
-        if region.endswith("시") or region.endswith("도"):
+        if region.endswith("시") or region.endswith("도") or region.endswith("군") or region.endswith("구"):
             region_tokens.append(region[:-1])
-        for a, b in (("특별시", ""), ("광역시", ""), ("특별자치시", ""), ("특별자치도", "")):
+        for a in ("특별시", "광역시", "특별자치시", "특별자치도", "자치시", "자치도"):
             if a in region:
-                region_tokens.append(region.replace(a, ""))
+                region_tokens.append(region.replace(a, "").strip())
+
     scored = []
     for it in items or []:
         if not isinstance(it, dict):
             continue
         info = normalize_youth_program(it)
-        blob = " ".join(
-            str(x or "")
-            for x in [
-                info.get("name"),
-                info.get("facility"),
-                info.get("target"),
-                info.get("addr"),
-                info.get("sido"),
-                info.get("sgg"),
-                it.get("prgrmOtlnCn"),
-                it.get("actvRelmNm"),
-                it.get("actvTypeNm"),
-            ]
-        )
+        name = str(info.get("name") or "")
+        target = str(info.get("target") or "")
+        facility = str(info.get("facility") or "")
+        sido = str(info.get("sido") or "")
+        sgg = str(info.get("sgg") or "")
+        addr = str(info.get("addr") or "")
+        domain = str(it.get("actvRelmNm") or it.get("actvTypeNm") or "")
+        outline = str(it.get("prgrmOtlnCn") or it.get("eduGoalCn") or "")[:200]
+        blob = " ".join([name, target, facility, sido, sgg, addr, domain, outline])
+
         sc = 0
+        reasons = []
+
+        # 1) 관심 키워드
+        kw_hit = 0
         for k in kws:
             if k and k in blob:
-                sc += 3 if k in (info.get("name") or "") else 1
-        # 지역: 있으면 가점, 없어도 탈락시키지 않음(1차 후보)
-        loc = f"{info.get('sido','')} {info.get('sgg','')} {info.get('addr','')} {info.get('facility','')}"
-        if region_tokens and any(t and t in loc for t in region_tokens):
-            sc += 2
-        if sc > 0:
-            scored.append((sc, it))
+                kw_hit += 3 if k in name else 1
+        if kw_hit:
+            sc += kw_hit
+            reasons.append("관심")
+
+        # 2) 유사 유형
+        type_hit = sum(1 for t in type_tokens if t and t in blob)
+        if type_hit:
+            sc += min(type_hit, 5)
+            reasons.append("유사유형")
+
+        # 3) 동일 지역
+        loc = f"{sido} {sgg} {addr} {facility}"
+        region_hit = any(t and t in loc for t in region_tokens) if region_tokens else False
+        if region_hit:
+            sc += 4
+            reasons.append("지역")
+
+        # 4) 대상 연령대
+        age_blob = f"{target} {name} {outline}"
+        age_hit = any(t and t in age_blob for t in age_tokens)
+        if age_hit:
+            sc += 3
+            reasons.append("연령")
+
+        # 포함 조건: 관심/유형 중 하나 + (지역 또는 연령) 이거나, 관심만 강하거나, 지역+연령
+        include = False
+        if kw_hit or type_hit:
+            include = True
+        elif region_hit and age_hit:
+            include = True
+        elif region_hit and sc >= 4:
+            include = True
+
+        if include and sc > 0:
+            scored.append((sc, it, reasons))
+
     scored.sort(key=lambda x: -x[0])
+    # 다양성: 상위 limit
     return [x[1] for x in scored[:limit]]
 
 
-def ai_pick_youth_from_cache(provider, api_key, keywords: list, region: str, candidates: list, limit: int = 12):
-    """AI가 캐시 후보 중 관련 활동만 선별"""
+def ai_pick_youth_from_cache(
+    provider, api_key, keywords: list, region: str, candidates: list, limit: int = 12, school: str = ""
+):
+    """AI 선별: 관심·지역·연령·유사유형을 넓게 인정"""
     if not candidates:
         return []
     if not api_key:
         return candidates[:limit]
     slim = []
-    for i, it in enumerate(candidates[:50]):
+    for i, it in enumerate(candidates[:60]):
         info = normalize_youth_program(it)
         slim.append({
             "i": i,
@@ -1065,18 +1162,24 @@ def ai_pick_youth_from_cache(provider, api_key, keywords: list, region: str, can
             "facility": info.get("facility") or "",
             "target": info.get("target") or "",
             "sido": info.get("sido") or "",
+            "type": str(it.get("actvRelmNm") or it.get("actvTypeNm") or "")[:30],
             "addr": (info.get("addr") or "")[:40],
         })
     try:
         prompt = (
-            f"관심: {keywords}\n지역: {region or '전국'}\n"
-            f"후보: {json.dumps(slim, ensure_ascii=False)}\n"
-            f'관심·지역과 관련 높은 순 {{"idx":[...]}} 최대 {limit}개. 무관하면 넣지 말 것.'
+            f"관심키워드: {keywords}\n교급: {school or '미상'}\n지역: {region or '전국'}\n"
+            f"후보활동: {json.dumps(slim, ensure_ascii=False)}\n\n"
+            "선정 기준(완화):\n"
+            "1) 관심과 직접 관련되거나 유사 유형(체험·캠프·문화 등)\n"
+            "2) 동일·인근 지역\n"
+            "3) 교급에 맞는 대상(초/중/고/청소년)\n"
+            "프로그램명에 관심 단어가 없어도 유형·대상·지역이 맞으면 포함.\n"
+            f'JSON만: {{"idx":[...], "reason":"한줄"}} 최대 {limit}개.'
         )
         raw = get_ai_response(
             provider,
             api_key,
-            "청소년활동 선별기. JSON만 출력.",
+            "청소년활동 추천 선별기. 관련성 기준을 완화해 실용적 추천. JSON만 출력.",
             prompt,
         )
         m = re.search(r"\{[\s\S]*\}", raw or "")
@@ -1090,7 +1193,8 @@ def ai_pick_youth_from_cache(provider, api_key, keywords: list, region: str, can
                         out.append(candidates[ii])
                 except Exception:
                     pass
-            return out[:limit]
+            if out:
+                return out[:limit]
     except Exception:
         pass
     return candidates[:limit]
@@ -6274,29 +6378,52 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
                     }
                 else:
                     cand = filter_youth_cache_by_keywords(
-                        y_all, search_kws, region=region or "", limit=40
+                        y_all,
+                        search_kws,
+                        region=region or "",
+                        school=school or "",
+                        limit=60,
                     )
-                    if not cand and search_kws:
-                        # 키워드 약하면 상위 일부만이라도 AI 후보로
-                        cand = y_all[:30]
+                    # 후보가 너무 적으면 지역만이라도 재검색
+                    if len(cand) < 5 and (region or school):
+                        more = filter_youth_cache_by_keywords(
+                            y_all,
+                            keywords=[],
+                            region=region or "",
+                            school=school or "",
+                            limit=40,
+                        )
+                        # 합치기
+                        seen_k = set()
+                        merged = []
+                        for row in cand + more:
+                            k = _youth_item_key(row) if isinstance(row, dict) else str(id(row))
+                            if k in seen_k:
+                                continue
+                            seen_k.add(k)
+                            merged.append(row)
+                        cand = merged[:60]
+                    if not cand:
+                        # 최후: 지역 문자열 포함 항목
+                        if region:
+                            cand = [
+                                it for it in (y_all or [])
+                                if isinstance(it, dict)
+                                and region[:2] in json.dumps(it, ensure_ascii=False)
+                            ][:40]
                     if api_key and cand:
                         youth_items = ai_pick_youth_from_cache(
-                            provider, api_key, search_kws, region or "", cand, limit=12
+                            provider,
+                            api_key,
+                            search_kws,
+                            region or "",
+                            cand,
+                            limit=12,
+                            school=school or "",
                         )
                     else:
                         youth_items = cand[:12]
-                    # 지역 최종 필터 (가능하면)
-                    if region and youth_items:
-                        loc_filtered = []
-                        for row in youth_items:
-                            info = normalize_youth_program(row)
-                            loc = " ".join(
-                                x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility")] if x
-                            )
-                            if region_matches_user(loc, region) or not loc.strip():
-                                loc_filtered.append(row)
-                        if loc_filtered:
-                            youth_items = loc_filtered
+                    # 지역 강제 탈락 없음 — 점수 순 추천 유지
                     st.session_state.career_youth_meta = {
                         "cache_count": len(y_all),
                         "cache_status": (y_meta or {}).get("status"),
