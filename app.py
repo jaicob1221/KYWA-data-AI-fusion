@@ -3426,7 +3426,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                한국청소년활동진흥원 · AI 업무지원 도구</span></div>""",
+                KYWA 데이터 융복합 서비스</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
@@ -3707,7 +3707,7 @@ if st.session_state.username == ADMIN_USER:
         st.sidebar.caption("아직 실행 기록이 없습니다.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("디지털정보부 · 업무지원 도구")
+st.sidebar.caption("디지털정보부 · KYWA 데이터 융복합 서비스")
 
 # ---------- 메인 ----------
 if tool == "🏠 처음 화면":
