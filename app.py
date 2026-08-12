@@ -669,6 +669,7 @@ def fetch_youth_singo_programs(
     num_of_rows: int = 20,
     sdate: str = "",
     edate: str = "",
+    endpoint_mode: str = "auto",
 ):
     """
     청소년활동 프로그램 검색 — 여러 공공 API 후보를 순차 시도
@@ -729,18 +730,21 @@ def fetch_youth_singo_programs(
     edate = (datetime.now() + timedelta(days=365)).strftime("%Y%m%d")
     sdate = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
 
-    # 확정 End Point
+    # End Point (bulk는 search_only 권장 — Vol API는 건수 적어 조기종료됨)
     primary = (
         "https://apis.data.go.kr/1383000/yhis/YouthProgramSearchService/getYouthProgramSearchList"
     )
-    candidates = [
-        (primary, {}),
-        ("https://apis.data.go.kr/1383000/YouthActivInfoSingoSrvc/getSingoProgrmList", {}),
-        (
-            "https://apis.data.go.kr/1383000/YouthActivInfoVolSrvc/getVolProgrmList",
-            {"sdate": sdate, "edate": edate},
-        ),
-    ]
+    singo = "https://apis.data.go.kr/1383000/YouthActivInfoSingoSrvc/getSingoProgrmList"
+    vol = "https://apis.data.go.kr/1383000/YouthActivInfoVolSrvc/getVolProgrmList"
+    mode = (endpoint_mode or "auto").strip().lower()
+    if mode in ("search", "search_only", "primary"):
+        candidates = [(primary, {})]
+    elif mode in ("singo", "singo_only"):
+        candidates = [(singo, {})]
+    elif mode in ("vol", "vol_only"):
+        candidates = [(vol, {})]
+    else:
+        candidates = [(primary, {}), (singo, {}), (vol, {})]
 
     last_meta = {}
     for url, extra in candidates:
