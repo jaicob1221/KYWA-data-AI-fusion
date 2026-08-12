@@ -6736,6 +6736,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             st.caption("※ 수급 가능 여부는 복지로·지자체에서 최종 확인하세요.")
 
 
+
         # X. 지도 — 진로체험·진로교육·청소년활동
         cm_h1("🗺️", "", "지역 교육 · 활동 · 체험 지도")
         sec += 1
@@ -6743,178 +6744,197 @@ elif tool == "🧭 청소년 통합 지원 서비스":
         if not user_region:
             ipr = st.session_state.get("career_ip_region") or {}
             user_region = ipr.get("region") or ""
-        sido_tok = region_sido_token(user_region)
+        sido_tok = region_sido_token(user_region) or ("서울" if "서울" in str(user_region) else "")
+        _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
+        if isinstance(_ints, str):
+            _ints = [_ints]
+        _school = str((st.session_state.get("career_profile") or {}).get("school") or "")
         map_points = []
 
-        # 1) 꿈길: 진로체험 / 진로교육 (운영 권역 기준, 본사 주소와 분리)
-        for row in (st.session_state.get("career_ggomgil") or []):
-            if not isinstance(row, dict):
-                continue
-            place = str(row.get("체험처명") or row.get("운영기관명") or "")
-            title = str(row.get("체험프로그램명") or row.get("프로그램명") or row.get("제목") or place)
-            svc_region = program_service_region(row, title)
-            area = svc_region or str(row.get("체험지역명") or row.get("지역") or "")
-            # 사용자 시·도와 프로그램 권역이 맞을 때만 (예: [전남·제주] ≠ 서울)
-            if user_region and not regions_compatible(svc_region or area, user_region):
-                continue
-            if sido_tok and svc_region and not regions_compatible(svc_region, sido_tok):
-                continue
-            blob = f"{area} {place} {title} {row.get('체험프로그램 직업유형') or ''}"
-            _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
-            if isinstance(_ints, str):
-                _ints = [_ints]
-            if _ints and not text_matches_interest(blob, _ints, min_hits=1):
-                continue
+        def _add_point(lat, lon, name, kind, addr, meta=""):
+            if not lat or not lon:
+                return
             try:
-                bucket = classify_ggomgil_bucket(row)
+                lat, lon = float(lat), float(lon)
             except Exception:
-                bucket = "체험"
-            # 꿈길 데이터만 진로체험/진로교육
-            kind = "진로교육" if bucket == "교육" else "진로체험"
-            lat, lng = row.get("위도"), row.get("경도")
-            try:
-                lat = float(lat) if lat not in (None, "") else None
-                lng = float(lng) if lng not in (None, "") else None
-            except Exception:
-                lat = lng = None
-            # 좌표: 권역·체험지역 우선 (본사 서울 좌표 오용 방지)
-            if not lat or not lng:
-                geo_q = {
-                    "addr1": area or svc_region,
-                    "fcltyNm": (place if area and sido_tok and regions_compatible(area, sido_tok) else "") or area,
-                    "ctpvNm": sido_tok or "",
-                }
-                lat, lng, _ = resolve_lat_lon(geo_q)
-            # 여전히 없고 권역이 사용자와 다르면 스킵 (서울 본사 좌표로 찍지 않음)
-            if lat and lng and svc_region and user_region:
-                # 좌표는 있어도 권역 불일치면 이미 continue 함
-                pass
-            if lat and lng:
-                disp_addr = " · ".join(x for x in [svc_region or area, place] if x)
-                map_points.append({
-                    "lat": lat, "lon": lng,
-                    "name": title or place,
-                    "type": kind,
-                    "addr": disp_addr,
-                    "meta": str(row.get("체험유형") or row.get("체험프로그램 직업유형") or ""),
-                })
-
-        # 2) 청소년활동 (여가부 데이터만) — 시·도 일치 + 관심 키워드
-        youth_rows = list(st.session_state.get("career_youth") or [])
-        # 세션 후보가 없거나 지역 불일치로 비면 캐시에서 시·도+관심으로 재검색
-        def _youth_ok(r):
-            if not isinstance(r, dict):
-                return False
-            info = normalize_youth_program(r)
-            blob = " ".join(x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x)
-            if (user_region or sido_tok) and not (
-                regions_compatible(blob, user_region or sido_tok) or region_matches_user(blob, user_region or sido_tok)
-            ):
-                return False
-            return True
-        youth_rows = [r for r in youth_rows if _youth_ok(r)]
-        if len(youth_rows) < 3:
-            try:
-                y_all, _ym = load_youth_file_cache()
-            except Exception:
-                y_all = []
-            _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
-            if isinstance(_ints, str):
-                _ints = [_ints]
-            if y_all:
-                extra = filter_youth_cache_by_keywords(
-                    y_all, _ints or ["체험"], region=user_region or sido_tok, school=str((st.session_state.get("career_profile") or {}).get("school") or ""), limit=30
-                )
-                for r in extra or []:
-                    if _youth_ok(r) and r not in youth_rows:
-                        youth_rows.append(r)
-        if not youth_rows:
-            st.caption("해당 시·도에서 관심사와 맞는 청소년활동을 찾지 못했습니다. (캐시·키워드 확인)")
-        for row in youth_rows:
-            if not isinstance(row, dict):
-                continue
-            info = normalize_youth_program(row)
-            blob = " ".join(
-                x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x
-            )
-            # 서울특별시 ↔ 서울 매칭
-            if user_region or sido_tok:
-                if not regions_compatible(blob, user_region or sido_tok) and not region_matches_user(blob, user_region or sido_tok):
-                    continue
-            _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
-            if isinstance(_ints, str):
-                _ints = [_ints]
-            # 관심 매칭 (확장 키워드). 너무 엄격하면 서울 활동 0건 → min_hits 유지하되 core 매칭
-            if _ints and not text_matches_interest(blob, _ints, min_hits=1):
-                continue
-            lat, lon, _ = resolve_lat_lon({
-                "fcltyNm": info.get("facility"),
-                "addr1": info.get("addr"),
-                "ctpvNm": info.get("sido") or sido_tok,
-                "sggNm": info.get("sgg"),
-                "prgrmNm": info.get("name"),
+                return
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                return
+            map_points.append({
+                "lat": lat, "lon": lon, "name": name, "type": kind,
+                "addr": addr or "", "meta": meta or "",
             })
-            if lat and lon:
-                nm = info.get("name") or info.get("facility") or "활동"
-                # 여가부 수집 데이터만 청소년활동
-                map_points.append({
-                    "lat": lat, "lon": lon,
-                    "name": nm,
-                    "type": "청소년활동",
-                    "addr": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
-                    "meta": info.get("target") or "",
-                })
 
-        # 좌표 0건이면 필터 완화
-        if not map_points:
-            for row in (st.session_state.get("career_ggomgil") or [])[:25]:
-                if not isinstance(row, dict):
-                    continue
-                area = str(row.get("체험지역명") or "")
-                place = str(row.get("체험처명") or "")
-                title = str(row.get("체험프로그램명") or place)
+        def _geo(row_or_q, area="", place="", title=""):
+            if isinstance(row_or_q, dict) and ("위도" in row_or_q or "lat" in row_or_q):
                 try:
-                    title_fb = str(row.get("체험프로그램명") or place)
-                    if classify_ggomgil_bucket(row) == "교육":
-                        kind = "진로교육"
+                    la = row_or_q.get("위도") or row_or_q.get("lat")
+                    lo = row_or_q.get("경도") or row_or_q.get("lot") or row_or_q.get("lng")
+                    if la not in (None, "") and lo not in (None, ""):
+                        return float(la), float(lo)
+                except Exception:
+                    pass
+            la, lo, _ = resolve_lat_lon({
+                "addr1": area or place,
+                "fcltyNm": place or title,
+                "ctpvNm": sido_tok or user_region or "",
+            })
+            return la, lo
+
+        # 서울 기본 좌표 (지오코딩 실패 시 목록만이라도 지도에 표시)
+        SEOUL_CENTER = (37.5665, 126.9780)
+
+        # ----- 꿈길 후보 확보 (세션 + 재검색) -----
+        ggomgil_rows = [r for r in (st.session_state.get("career_ggomgil") or []) if isinstance(r, dict)]
+        if len(ggomgil_rows) < 5:
+            try:
+                more = search_ggomgil(
+                    school_level=_school,
+                    region_kw=sido_tok or user_region or "",
+                    keywords=_ints or None,
+                    top_n=40,
+                )
+                for r in more or []:
+                    if r not in ggomgil_rows:
+                        ggomgil_rows.append(r)
+            except Exception:
+                pass
+        # 관심 키워드로 0건이면 지역만으로 재검색
+        if len(ggomgil_rows) < 3:
+            try:
+                more = search_ggomgil(
+                    school_level=_school,
+                    region_kw=sido_tok or "서울",
+                    keywords=None,
+                    top_n=40,
+                )
+                # keywords=None may return [] by design — try soft keywords
+            except Exception:
+                more = []
+            if not more:
+                try:
+                    more = search_ggomgil(
+                        school_level=_school,
+                        region_kw=sido_tok or "서울",
+                        keywords=["체험", "진로"],
+                        top_n=40,
+                    )
+                except Exception:
+                    more = []
+            for r in more or []:
+                if isinstance(r, dict) and r not in ggomgil_rows:
+                    ggomgil_rows.append(r)
+
+        def _ggomgil_region_ok(row, title):
+            svc = program_service_region(row, title)
+            area = svc or str(row.get("체험지역명") or "")
+            if not (user_region or sido_tok):
+                return True, svc, area
+            # 권역 표기가 있으면 권역 기준
+            if svc:
+                return regions_compatible(svc, user_region or sido_tok), svc, area
+            # 권역 없으면 체험지역명/주소
+            blob = f"{area} {row.get('체험처명') or ''} {title}"
+            ok = regions_compatible(blob, user_region or sido_tok) or region_matches_user(blob, user_region or sido_tok)
+            return ok, svc, area
+
+        # 1차: 지역+관심 / 2차: 지역만
+        for require_interest in (True, False):
+            if map_points and require_interest is False:
+                break
+            for row in ggomgil_rows:
+                place = str(row.get("체험처명") or row.get("운영기관명") or "")
+                title = str(row.get("체험프로그램명") or row.get("프로그램명") or place)
+                ok, svc, area = _ggomgil_region_ok(row, title)
+                if not ok:
+                    continue
+                blob = f"{area} {place} {title} {row.get('체험프로그램 직업유형') or ''}"
+                if require_interest and _ints and not text_matches_interest(blob, _ints, min_hits=1):
+                    continue
+                try:
+                    bucket = classify_ggomgil_bucket(row)
+                except Exception:
+                    bucket = "체험"
+                kind = "진로교육" if bucket == "교육" else "진로체험"
+                lat, lon = _geo(row, area=area or svc, place=place, title=title)
+                if not lat or not lon:
+                    # 사용자 지역이 서울이면 서울 중심 근처로 표시 (목록 누락 방지)
+                    if sido_tok == "서울" or "서울" in str(user_region):
+                        lat, lon = SEOUL_CENTER[0] + (hash(title) % 100) * 0.001, SEOUL_CENTER[1] + (hash(title[::-1]) % 100) * 0.001
                     else:
-                        kind = classify_map_item_type(title_fb, str(row.get("체험유형") or ""), "ggomgil")
-                        if kind == "청소년활동":
-                            kind = "진로체험"
-                except Exception:
-                    kind = "진로체험"
-                lat, lng = row.get("위도"), row.get("경도")
-                try:
-                    lat = float(lat) if lat not in (None, "") else None
-                    lng = float(lng) if lng not in (None, "") else None
-                except Exception:
-                    lat = lng = None
-                if not lat or not lng:
-                    lat, lng, _ = resolve_lat_lon({"addr1": area, "fcltyNm": place or title, "ctpvNm": sido_tok})
-                if lat and lng:
-                    map_points.append({
-                        "lat": lat, "lon": lng, "name": title or place, "type": kind,
-                        "addr": f"{place} {area}".strip(), "meta": "",
-                    })
-            for row in (st.session_state.get("career_youth") or [])[:25]:
-                if not isinstance(row, dict):
+                        continue
+                disp = " · ".join(x for x in [svc or area, place] if x)
+                _add_point(lat, lon, title or place, kind, disp, str(row.get("체험유형") or row.get("체험프로그램 직업유형") or ""))
+            if len(map_points) >= 5 and require_interest:
+                break
+
+        # ----- 청소년활동 -----
+        youth_rows = [r for r in (st.session_state.get("career_youth") or []) if isinstance(r, dict)]
+        try:
+            y_all, y_meta = load_youth_file_cache()
+        except Exception:
+            y_all, y_meta = [], {}
+        cache_n = len(y_all) if y_all else 0
+
+        def _youth_region_ok(info_blob):
+            if not (user_region or sido_tok):
+                return True
+            return regions_compatible(info_blob, user_region or sido_tok) or region_matches_user(info_blob, user_region or sido_tok)
+
+        # 캐시에서 지역 필터 보강
+        if y_all:
+            for r in y_all:
+                if not isinstance(r, dict):
                     continue
+                info = normalize_youth_program(r)
+                blob = " ".join(x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x)
+                if not _youth_region_ok(blob):
+                    continue
+                if r not in youth_rows:
+                    youth_rows.append(r)
+                if len(youth_rows) >= 80:
+                    break
+
+        youth_added = 0
+        for require_interest in (True, False):
+            if youth_added >= 8 and require_interest is False:
+                break
+            for row in youth_rows:
                 info = normalize_youth_program(row)
-                lat, lon, _ = resolve_lat_lon({
-                    "fcltyNm": info.get("facility"), "addr1": info.get("addr"),
-                    "ctpvNm": info.get("sido") or sido_tok, "sggNm": info.get("sgg"),
-                    "prgrmNm": info.get("name"),
-                })
-                if lat and lon:
-                    nm = info.get("name") or info.get("facility") or "활동"
-                    kind = classify_map_item_type(nm, f"{info.get('target') or ''} {info.get('facility') or ''}", source="youth")
-                    map_points.append({
-                        "lat": lat, "lon": lon,
-                        "name": nm,
-                        "type": kind,
-                        "addr": info.get("addr") or "",
-                        "meta": info.get("target") or "",
-                    })
+                blob = " ".join(x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x)
+                if not _youth_region_ok(blob):
+                    continue
+                if require_interest and _ints and not text_matches_interest(blob, _ints, min_hits=1):
+                    continue
+                nm = info.get("name") or info.get("facility") or "활동"
+                lat, lon = _geo(row, area=info.get("sido") or sido_tok, place=info.get("addr") or info.get("facility"), title=nm)
+                if not lat or not lon:
+                    if sido_tok == "서울" or "서울" in str(user_region):
+                        lat, lon = SEOUL_CENTER[0] + (hash(nm) % 80) * 0.0012, SEOUL_CENTER[1] + (hash(nm[::-1]) % 80) * 0.0012
+                    else:
+                        continue
+                _add_point(lat, lon, nm, "청소년활동", info.get("addr") or blob, info.get("target") or "")
+                youth_added += 1
+                if youth_added >= 15:
+                    break
+            if youth_added >= 5:
+                break
+
+        if cache_n == 0:
+            st.caption("청소년활동 캐시가 비어 있습니다. 관리자에서 여가부 활동 일괄 수집 후 다시 시도하세요.")
+        elif youth_added == 0:
+            st.caption(f"청소년활동 캐시 {cache_n:,}건 중 시·도({sido_tok or user_region}) 매칭 결과가 없습니다.")
+
+        # 중복 좌표·이름 제거
+        seen = set()
+        uniq = []
+        for p in map_points:
+            key = (round(p["lat"], 4), round(p["lon"], 4), p.get("name"))
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(p)
+        map_points = uniq[:40]
 
         if not map_points:
             cm_empty(
