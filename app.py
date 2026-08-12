@@ -1417,7 +1417,10 @@ def expand_interest_keywords(keywords: list) -> list:
         "코딩": ["코딩", "프로그래밍", "소프트웨어", "개발", "컴퓨터", "AI", "데이터"],
         "그림": ["그림", "미술", "디자인", "일러스트", "애니메이션"],
         "음악": ["음악", "연주", "작곡", "음향", "가수"],
-        "운동": ["운동", "체육", "스포츠", "트레이너", "선수"],
+        "운동": ["운동", "체육", "스포츠", "트레이너", "선수", "축구", "체육학과"],
+        "축구": ["축구", "풋볼", "체육", "스포츠", "운동", "선수", "체육고", "체육고등학교", "체육학과", "스포츠과학", "축구부", "코치", "트레이너"],
+        "체육": ["체육", "스포츠", "운동", "축구", "체육학과", "스포츠과학", "체육교육", "선수"],
+        "스포츠": ["스포츠", "체육", "운동", "선수", "트레이너", "체육학과", "스포츠과학"],
         "우주": ["우주", "항공", "천문", "물리", "과학자"],
         "로봇": ["로봇", "기계", "전자", "공학", "AI"],
         "환경": ["환경", "기후", "에너지", "재활용", "환경공학"],
@@ -2202,6 +2205,108 @@ def pick_from_cn_cache(kind: str, keywords: list, limit: int = 10):
     return items[: min(5, limit)]
 
 
+
+def filter_cose_by_school_level(items: list, school_level: str) -> list:
+    """교급에 맞지 않는 진로교육자료 제외 (고등학생 ← 초·중 놀이·초등자료 배제)"""
+    if not items:
+        return []
+    level = str(school_level or "")
+    # 고등/대학 지향
+    if any(x in level for x in ("고", "대학", "고등")):
+        ban = (
+            "초등", "초등학생", "초등학교", "어린이", "유치원", "누리",
+            "중학생 대상 놀이", "초등 진로", "초등용", "저학년", "놀이콘텐츠", "놀이 콘텐츠",
+            "초·중", "초중등",
+        )
+        # 중학교 전용 표현도 약하게 배제 (고등 우선)
+        ban_mid = ("중학교 진로", "중학생을 위한", "중1", "중2", "중3 대상")
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            blob = " ".join(str(it.get(k) or "") for k in (
+                "dataTitle", "title", "subject", "author", "content", "summary", "target", "schoolLevel"
+            ))
+            if any(b in blob for b in ban):
+                continue
+            if any(b in blob for b in ban_mid) and "고등" not in blob and "대학" not in blob:
+                continue
+            out.append(it)
+        return out  # 초등·놀이 자료만 있으면 빈 목록
+    if any(x in level for x in ("중",)):
+        ban = ("초등학생 전용", "유치원", "누리과정", "저학년 놀이")
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            blob = " ".join(str(it.get(k) or "") for k in ("dataTitle", "title", "subject"))
+            if any(b in blob for b in ban):
+                continue
+            out.append(it)
+        return out or items
+    return items
+
+
+def filter_schools_for_level(items: list, school_level: str, keywords: list) -> list:
+    """고등학생: 고등학교·대학교 위주, 지역 무관. 체육·축구 키워드 가산."""
+    if not items:
+        return []
+    level = str(school_level or "")
+    kws = [str(k) for k in (keywords or [])]
+    sport = any(k in ("축구", "체육", "스포츠", "운동", "선수") for k in kws) or any(
+        any(s in str(k) for s in ("축구", "체육", "스포츠")) for k in kws
+    )
+    scored = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("schoolNm") or it.get("schulNm") or it.get("name") or it.get("schoolName") or "")
+        typ = str(it.get("schoolType") or it.get("schoolGubun") or it.get("type") or it.get("schulKndscCode") or "")
+        blob = f"{name} {typ} " + " ".join(str(it.get(k) or "") for k in it.keys() if k not in ("raw",))
+        score = 0
+        if any(x in level for x in ("고", "고등")):
+            if any(x in blob for x in ("대학", "대학교", "college", "univ", "전문대")):
+                score += 5
+            if any(x in blob for x in ("고등", "고등학교", "고교")):
+                score += 4
+            if any(x in blob for x in ("초등", "중학교")) and "고등" not in blob:
+                score -= 5
+        if sport:
+            if any(x in blob for x in ("체육", "스포츠", "축구", "운동")):
+                score += 6
+        for k in kws[:8]:
+            if k and k in blob:
+                score += 2
+        if score > 0:
+            scored.append((score, it))
+    scored.sort(key=lambda x: -x[0])
+    if scored:
+        return [x[1] for x in scored]
+    # 점수 0이어도 고등 단계면 초등만 걸러 반환
+    if any(x in level for x in ("고", "고등")):
+        out = []
+        for it in items:
+            blob = str(it.get("schoolNm") or "") + str(it.get("schoolType") or "")
+            if "초등" in blob or ("중학교" in blob and "고등" not in blob):
+                continue
+            out.append(it)
+        return out or items
+    return items
+
+
+def text_matches_interest(blob: str, keywords: list, min_hits: int = 1) -> bool:
+    """관심 키워드가 본문에 충분히 포함되는지"""
+    b = str(blob or "")
+    if not keywords:
+        return True
+    kws = expand_interest_keywords(list(keywords)[:12])
+    hits = sum(1 for k in kws if k and k in b)
+    # 핵심어(원 관심) 1개라도 있으면 통과 가능
+    core = [str(k) for k in keywords if k]
+    core_hit = any(k in b for k in core)
+    return hits >= min_hits or core_hit
+
+
 def ai_pick_from_cache(provider, api_key, kind_label: str, keywords: list, candidates: list, limit: int = 8):
     """캐시 후보 중 관심과 연관된 항목을 AI가 고름"""
     if not api_key or not candidates:
@@ -2222,8 +2327,13 @@ def ai_pick_from_cache(provider, api_key, kind_label: str, keywords: list, candi
         edu_hint = ""
         if "교육" in kind_label or "cose" in kind_label.lower() or "자료" in kind_label:
             edu_hint = (
-                "진로교육자료는 흥미·적성 이해, 직업탐색, 진로설계, 체험·수업 자료처럼 "
-                "관심 분야 역량·적성을 키우는 자료를 우선 선택. 제목만 보고 무관한 것은 제외.\n"
+                "진로교육자료는 관심 분야 역량·적성 자료만. "
+                "고등·대학 대상이면 초등·중등 놀이·저학년 콘텐츠는 제외.\n"
+            )
+        if "학교" in str(kind_label):
+            edu_hint = (
+                "관심 관련 고등학교·대학교를 전국 단위로 추천. 지역 제한 없음. "
+                "초·중학교 제외. 체육·축구면 체육고·스포츠·체육학과 우선.\n"
             )
         raw = get_ai_response(
             provider,
@@ -5875,20 +5985,42 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     st.session_state.career_major_details = major_details
                     st.session_state.career_majors = majors[:10]
 
-                    cand_schools = pick_from_cn_cache(
-                        "schools", search_kws + ([region] if region else []), limit=25
-                    )
-                    if len(cand_schools) < 5:
-                        cand_schools = load_cn_cache("schools")[:40]
+                    # 학교: 지역 제한 없이, 교급(고등→고교·대학) 반영
+                    school_level = str(st.session_state.get("career_profile", {}).get("school") or "")
+                    # 관심 키워드만으로 후보 (지역 넣지 않음)
+                    cand_schools = pick_from_cn_cache("schools", search_kws, limit=40)
+                    if len(cand_schools) < 12:
+                        more = load_cn_cache("schools") or []
+                        # 체육/축구 등 키워드 포함 학교 우선 병합
+                        seen = {id(x) for x in cand_schools}
+                        for it in more:
+                            if not isinstance(it, dict):
+                                continue
+                            blob = str(it.get("schoolNm") or "") + str(it.get("schoolType") or "")
+                            if any(k in blob for k in search_kws[:10]):
+                                if id(it) not in seen:
+                                    cand_schools.append(it)
+                                    seen.add(id(it))
+                            if len(cand_schools) >= 50:
+                                break
+                        if len(cand_schools) < 15:
+                            for it in more[:80]:
+                                if id(it) not in seen:
+                                    cand_schools.append(it)
+                                    seen.add(id(it))
+                    cand_schools = filter_schools_for_level(cand_schools, school_level, search_kws)
                     schools = ai_pick_from_cache(
-                        provider, api_key, "학교", search_kws, cand_schools, limit=8
-                    ) if api_key else cand_schools[:8]
-                    st.session_state.career_schools = schools[:8]
+                        provider, api_key, "학교", search_kws, cand_schools, limit=10
+                    ) if api_key else cand_schools[:10]
+                    schools = filter_schools_for_level(schools, school_level, search_kws)
+                    st.session_state.career_schools = schools[:10]
 
                     # 진로교육자료: 사전 캐시 전체에서 키워드 후보 → AI가 흥미·적성 향상 자료 선별
                     cand_cose = pick_from_cn_cache("cose", search_kws, limit=40)
+                    _schl = str(st.session_state.get("career_profile", {}).get("school") or "")
+                    cand_cose = filter_cose_by_school_level(cand_cose, _schl)
                     if len(cand_cose) < 10:
-                        full_cose = load_cn_cache("cose")
+                        full_cose = filter_cose_by_school_level(load_cn_cache("cose") or [], _schl)
                         # 키워드 약한 매칭으로 후보 확장
                         seen = {_cn_item_key(x, ["dataTitle", "title", "seq"]) for x in cand_cose}
                         for it in full_cose:
@@ -5909,7 +6041,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     cose_list = ai_pick_from_cache(
                         provider, api_key, "진로교육자료", search_kws, cand_cose, limit=8
                     ) if api_key else cand_cose[:8]
-                    st.session_state.career_cose = cose_list[:8]
+                    st.session_state.career_cose = filter_cose_by_school_level(cose_list[:8], str(st.session_state.get("career_profile", {}).get("school") or ""))
                 except Exception as e:
                     jobs_meta = {"error": str(e)}
 
@@ -6546,6 +6678,12 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             blob = f"{area} {place} {title}"
             if sido_tok and sido_tok not in blob and not region_matches_user(blob, user_region):
                 continue
+            # 관심사 관련성 (축구→공예 같은 오매칭 방지)
+            _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
+            if isinstance(_ints, str):
+                _ints = [_ints]
+            if _ints and not text_matches_interest(blob + " " + str(row.get("체험프로그램 직업유형") or ""), _ints, min_hits=1):
+                continue
             try:
                 bucket = classify_ggomgil_bucket(row)
             except Exception:
@@ -6587,6 +6725,11 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             )
             if blob and sido_tok and not region_matches_user(blob, user_region) and sido_tok not in blob:
                 continue
+            _ints = (st.session_state.get("career_profile") or {}).get("interests") or []
+            if isinstance(_ints, str):
+                _ints = [_ints]
+            if _ints and not text_matches_interest(blob, _ints, min_hits=1):
+                continue
             lat, lon, _ = resolve_lat_lon({
                 "fcltyNm": info.get("facility"),
                 "addr1": info.get("addr"),
@@ -6596,11 +6739,11 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             })
             if lat and lon:
                 nm = info.get("name") or info.get("facility") or "활동"
-                kind = classify_map_item_type(nm, f"{info.get('target') or ''} {info.get('facility') or ''}", source="youth")
+                # 여가부 수집 데이터만 청소년활동
                 map_points.append({
                     "lat": lat, "lon": lon,
                     "name": nm,
-                    "type": kind,
+                    "type": "청소년활동",
                     "addr": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
                     "meta": info.get("target") or "",
                 })
