@@ -613,6 +613,32 @@ def classify_ggomgil_bucket(row: dict) -> str:
     return "체험"
 
 
+
+def classify_map_item_type(name: str = "", meta: str = "", source: str = "") -> str:
+    """
+    지도 표기용 유형 구분: 진로체험 / 진로교육 / 청소년활동
+    source: ggomgil | youth | ''
+    """
+    blob = f"{name} {meta} {source}".lower()
+    # 한글 소문자 변환은 의미 없으므로 원문도
+    blob_kr = f"{name} {meta}"
+    edu_keys = ("진로교육", "교육과정", "특강", "강의", "수업", "학습", "워크숍", "워크샵", "세미나", "설명회")
+    exp_keys = ("진로체험", "직업체험", "현장체험", "체험학습", "탐방", "실습", "견학", "체험")
+    # 교육 우선 키워드가 분명한 경우
+    if any(k in blob_kr for k in ("진로교육", "교육 특강", "진로특강")):
+        return "진로교육"
+    if any(k in blob_kr for k in edu_keys) and not any(k in blob_kr for k in ("체험", "실습", "탐방", "견학")):
+        return "진로교육"
+    if any(k in blob_kr for k in ("진로체험", "직업체험", "현장체험")):
+        return "진로체험"
+    if any(k in blob_kr for k in exp_keys):
+        return "진로체험"
+    if source == "ggomgil":
+        return "진로체험"
+    return "청소년활동"
+
+
+
 def region_matches_user(item_region: str, user_region: str) -> bool:
     """사용자 시도/도를 벗어나면 False (느슨한 포함 매칭)"""
     u = (user_region or "").strip()
@@ -5507,8 +5533,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             "role": "assistant",
             "content": (
                 "안녕! 나는 진로맵 길잡이야.\n"
-                "초·중·고 중 어디에 가까운지, 요즘 관심 있는 것(예: 요리, 로봇, 그림)만 편하게 말해줘.\n"
-                "지역을 알면 근처 체험도 같이 찾아줄게. 없어도 괜찮아!"
+                "어느 학교에 다니는지, 요즘 관심 있는 것(예: 요리, 로봇, 그림)만 편하게 말해줘."
             ),
         })
 
@@ -6525,7 +6550,14 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 bucket = classify_ggomgil_bucket(row)
             except Exception:
                 bucket = "체험"
-            kind = "진로교육" if bucket == "교육" else "진로체험"
+            title0 = title
+            meta0 = str(row.get("체험유형") or row.get("체험프로그램 직업유형") or "")
+            if bucket == "교육":
+                kind = "진로교육"
+            else:
+                kind = classify_map_item_type(title0, meta0, source="ggomgil")
+                if kind == "청소년활동":
+                    kind = "진로체험"
             lat, lng = row.get("위도"), row.get("경도")
             try:
                 lat = float(lat) if lat not in (None, "") else None
@@ -6563,10 +6595,12 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 "prgrmNm": info.get("name"),
             })
             if lat and lon:
+                nm = info.get("name") or info.get("facility") or "활동"
+                kind = classify_map_item_type(nm, f"{info.get('target') or ''} {info.get('facility') or ''}", source="youth")
                 map_points.append({
                     "lat": lat, "lon": lon,
-                    "name": info.get("name") or info.get("facility") or "활동",
-                    "type": "청소년활동",
+                    "name": nm,
+                    "type": kind,
                     "addr": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
                     "meta": info.get("target") or "",
                 })
@@ -6580,7 +6614,13 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 place = str(row.get("체험처명") or "")
                 title = str(row.get("체험프로그램명") or place)
                 try:
-                    kind = "진로교육" if classify_ggomgil_bucket(row) == "교육" else "진로체험"
+                    title_fb = str(row.get("체험프로그램명") or place)
+                    if classify_ggomgil_bucket(row) == "교육":
+                        kind = "진로교육"
+                    else:
+                        kind = classify_map_item_type(title_fb, str(row.get("체험유형") or ""), "ggomgil")
+                        if kind == "청소년활동":
+                            kind = "진로체험"
                 except Exception:
                     kind = "진로체험"
                 lat, lng = row.get("위도"), row.get("경도")
@@ -6606,10 +6646,12 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     "prgrmNm": info.get("name"),
                 })
                 if lat and lon:
+                    nm = info.get("name") or info.get("facility") or "활동"
+                    kind = classify_map_item_type(nm, f"{info.get('target') or ''} {info.get('facility') or ''}", source="youth")
                     map_points.append({
                         "lat": lat, "lon": lon,
-                        "name": info.get("name") or info.get("facility") or "활동",
-                        "type": "청소년활동",
+                        "name": nm,
+                        "type": kind,
                         "addr": info.get("addr") or "",
                         "meta": info.get("target") or "",
                     })
