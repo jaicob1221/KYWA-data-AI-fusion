@@ -4057,7 +4057,7 @@ def normalize_youth_program(row: dict) -> dict:
     if not isinstance(row, dict):
         return {}
     name = _pick_field(
-        row, "pgmNm", "programNm", "progrmNm", "pgm", "title", "프로그램명", "actvNm", "name"
+        row, "prgrmNm", "pgmNm", "programNm", "progrmNm", "pgm", "title", "프로그램명", "actvNm", "name", "atName"
     )
     facility = _pick_field(
         row, "organNm", "orgNm", "org", "기관명", "fcltyNm", "시설명", "operInstNm",
@@ -6478,20 +6478,22 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             cm_empty(msg)
         else:
             table_rows = []
-            for row in y_hits[:30]:
+            for row in y_hits[:40]:
                 info = normalize_youth_program(row)
                 if not info.get("name") and not info.get("facility"):
-                    continue
+                    # raw 키 직접 시도
+                    raw = row if isinstance(row, dict) else {}
+                    if not (raw.get("prgrmNm") or raw.get("pgmNm") or raw.get("fcltyNm")):
+                        continue
+                    info = normalize_youth_program(raw)
                 loc_blob = " ".join(
-                    x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility")] if x
+                    x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x
                 )
-                if not region_matches_user(loc_blob, user_region):
+                # 지역 정보가 전혀 없고 사용자 지역만 있을 때도 일단 포함
+                if loc_blob.strip() and not region_matches_user(loc_blob, user_region):
                     continue
                 map_q = info.get("addr") or info.get("facility") or info.get("name") or ""
-                map_link = None
-                if map_q:
-                    import urllib.parse as _up
-                    map_link = f"https://map.naver.com/v5/search/{_up.quote(str(map_q))}"
+                map_link = naver_map_search_link(map_q) if map_q else None
                 table_rows.append({
                     "프로그램명": info.get("name") or "",
                     "운영기관명": info.get("facility") or "",
@@ -6503,7 +6505,25 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     "지도": map_link,
                 })
             if not table_rows:
-                cm_empty("지역에 맞는 청소년활동이 없거나 필드를 해석하지 못했습니다.")
+                # 지역 필터로 전부 탈락한 경우: 필터 없이 상위 표시
+                st.caption("지역 엄격 필터로 0건 → 관련도 상위 활동을 완화된 기준으로 표시합니다.")
+                for row in y_hits[:15]:
+                    info = normalize_youth_program(row)
+                    if not info.get("name") and not info.get("facility"):
+                        continue
+                    map_q = info.get("addr") or info.get("facility") or info.get("name") or ""
+                    table_rows.append({
+                        "프로그램명": info.get("name") or "",
+                        "운영기관명": info.get("facility") or "",
+                        "대상": info.get("target") or "",
+                        "요금": info.get("fee") or "",
+                        "시간/일정": info.get("time") or "",
+                        "장소(주소)": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
+                        "전화": info.get("tel") or "",
+                        "지도": naver_map_search_link(map_q) if map_q else None,
+                    })
+            if not table_rows:
+                cm_empty("청소년활동 후보가 있으나 프로그램명·시설 필드를 해석하지 못했습니다. 캐시 원본 키를 확인하세요.")
             else:
                 try:
                     import pandas as pd
@@ -6691,26 +6711,99 @@ elif tool == "🧭 청소년 통합 지원 서비스":
         else:
             import pandas as pd
             dfm = pd.DataFrame(map_points)
-            # st.map 호환: lat/lon 컬럼
-            plot_df = dfm.rename(columns={"lat": "lat", "lon": "lon"})[["lat", "lon"]].dropna()
-            st.caption(f"시·도 기준: **{sido_tok or user_region or '전국'}** · 표시 {len(map_points)}곳")
+            st.caption(f"시·도 기준: **{sido_tok or user_region or '전국'}** · 표시 {len(map_points)}곳 · 마커에 마우스를 올리면 프로그램명이 표시됩니다.")
+
+            # 색상: 진로체험=파랑, 청소년활동=주황
+            def _color(t):
+                return [37, 99, 235, 220] if "진로" in str(t) else [249, 115, 22, 220]
+
+            dfm = dfm.copy()
+            dfm["color"] = dfm["type"].map(_color)
+            # 쐐기(핀) 형태: 큰 원 + 중심점 (pydeck)
             try:
-                st.map(plot_df, zoom=10)
-            except TypeError:
-                try:
-                    st.map(plot_df)
-                except Exception as e:
-                    st.warning(f"지도 렌더링 오류: {e}")
-            # 상세 표 + 네이버 링크
-            st.dataframe(
-                pd.DataFrame([{
+                import pydeck as pdk
+                mid_lat = float(dfm["lat"].mean())
+                mid_lon = float(dfm["lon"].mean())
+                # 핀처럼 보이게: 큰 반투명 원 + 작은 강조 점
+                layer_halo = pdk.Layer(
+                    "ScatterplotLayer",
+                    data=dfm,
+                    get_position="[lon, lat]",
+                    get_fill_color="color",
+                    get_radius=140,
+                    radius_min_pixels=10,
+                    radius_max_pixels=40,
+                    pickable=True,
+                    opacity=0.55,
+                )
+                layer_pin = pdk.Layer(
+                    "ScatterplotLayer",
+                    data=dfm,
+                    get_position="[lon, lat]",
+                    get_fill_color="color",
+                    get_radius=45,
+                    radius_min_pixels=6,
+                    radius_max_pixels=16,
+                    pickable=True,
+                    opacity=0.95,
+                )
+                tooltip = {
+                    "html": "<div style='font-weight:700;margin-bottom:4px;'>{name}</div>"
+                            "<div style='opacity:0.9'>{type}</div>"
+                            "<div style='font-size:12px;opacity:0.85'>{addr}</div>",
+                    "style": {
+                        "backgroundColor": "rgba(15,23,42,0.95)",
+                        "color": "#e2e8f0",
+                        "border": "1px solid #38bdf8",
+                        "borderRadius": "10px",
+                        "padding": "8px 10px",
+                        "fontSize": "13px",
+                    },
+                }
+                deck = pdk.Deck(
+                    map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                    initial_view_state=pdk.ViewState(
+                        latitude=mid_lat, longitude=mid_lon, zoom=10, pitch=35, bearing=0
+                    ),
+                    layers=[layer_halo, layer_pin],
+                    tooltip=tooltip,
+                )
+                st.pydeck_chart(deck, use_container_width=True)
+            except Exception as e:
+                st.warning(f"상세 지도 로드 실패 → 기본 지도로 표시 ({e})")
+                st.map(dfm[["lat", "lon"]].dropna())
+
+            # 선택 시 표에서 강조 (호버 연동 대신 선택 하이라이트)
+            labels = [f"{i+1}. [{p.get('type')}] {p.get('name')}" for i, p in enumerate(map_points)]
+            choice = st.selectbox(
+                "지도 항목 선택 (선택 시 아래 표에서 강조)",
+                options=["(선택 안 함)"] + labels,
+                key="map_point_select",
+            )
+            rows = []
+            for i, p in enumerate(map_points):
+                rows.append({
+                    "No": i + 1,
                     "구분": p["type"],
                     "프로그램/시설명": p["name"],
                     "위치": p.get("addr") or "",
-                    "위도": p.get("lat"),
-                    "경도": p.get("lon"),
                     "지도": naver_map_link(p["lat"], p["lon"], p["name"]) or naver_map_search_link(p.get("addr") or p["name"]),
-                } for p in map_points]),
+                })
+            dft = pd.DataFrame(rows)
+            if choice and choice != "(선택 안 함)":
+                sel_i = labels.index(choice)
+                p = map_points[sel_i]
+                st.markdown(
+                    f'<div class="cm-card" style="border:2px solid #38bdf8;">'
+                    f'<div class="cm-card-title">📍 선택: {p.get("name")}</div>'
+                    f'<div class="cm-body">{p.get("type")} · {p.get("addr") or ""}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                # 선택 행을 맨 위로
+                dft = pd.concat([dft.iloc[[sel_i]], dft.drop(dft.index[sel_i])], ignore_index=True)
+            st.dataframe(
+                dft,
                 use_container_width=True,
                 hide_index=True,
                 column_config={"지도": st.column_config.LinkColumn("지도", display_text="지도")},
