@@ -6424,120 +6424,6 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     links=" · ".join(links),
                 )
 
-        # VIII. 진로체험·교육
-        cm_h1("🎯", "", "진로체험 및 진로교육 추천")
-        sec += 1
-        g_hits = st.session_state.get("career_ggomgil") or []
-        if not g_hits:
-            cm_empty("조건에 맞는 진로체험·진로교육 프로그램이 없습니다.")
-        else:
-            exp_rows, edu_rows = [], []
-            for row in g_hits:
-                bucket = classify_ggomgil_bucket(row)
-                lat, lng = row.get("위도"), row.get("경도")
-                place = row.get("체험처명") or ""
-                area = row.get("체험지역명") or ""
-                link = naver_map_link(lat, lng, f"{place} {area}".strip()) or ""
-                rec = {
-                    "프로그램명": row.get("체험프로그램명") or "",
-                    "운영기관명": place,
-                    "체험유형": row.get("체험유형") or "",
-                    "직업유형": row.get("체험프로그램 직업유형") or "",
-                    "지역": area,
-                    "유무료": row.get("유무료구분") or "",
-                    "지도": link if link else None,
-                }
-                (edu_rows if bucket == "교육" else exp_rows).append(rec)
-
-            def _show_exp_table(num, title, rows):
-                cm_h2(num, title)
-                if not rows:
-                    st.markdown('<div class="cm-meta cm-indent">· 해당 없음</div>', unsafe_allow_html=True)
-                    return
-                try:
-                    import pandas as pd
-                    df = pd.DataFrame(rows)
-                    cfg = {}
-                    if "지도" in df.columns:
-                        cfg["지도"] = st.column_config.LinkColumn("지도", display_text="지도")
-                    st.dataframe(df, use_container_width=True, hide_index=True, column_config=cfg)
-                except Exception:
-                    for r in rows:
-                        st.write(r)
-
-            _show_exp_table("1.", "진로체험", exp_rows)
-            _show_exp_table("2.", "진로교육", edu_rows)
-
-        # IX. 청소년활동
-        cm_h1("🌱", "", "관련 추천 청소년활동")
-        y_hits = st.session_state.get("career_youth") or []
-        user_region = (st.session_state.get("career_profile") or {}).get("region") or ""
-        if not y_hits:
-            meta_y = st.session_state.get("career_youth_meta") or {}
-            msg = meta_y.get("error") or "캐시에서 관련 활동을 찾지 못했습니다. 관리자 일괄 수집 후 다시 시도하세요."
-            cm_empty(msg)
-        else:
-            table_rows = []
-            for row in y_hits[:40]:
-                info = normalize_youth_program(row)
-                if not info.get("name") and not info.get("facility"):
-                    # raw 키 직접 시도
-                    raw = row if isinstance(row, dict) else {}
-                    if not (raw.get("prgrmNm") or raw.get("pgmNm") or raw.get("fcltyNm")):
-                        continue
-                    info = normalize_youth_program(raw)
-                loc_blob = " ".join(
-                    x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x
-                )
-                # 지역 정보가 전혀 없고 사용자 지역만 있을 때도 일단 포함
-                if loc_blob.strip() and not region_matches_user(loc_blob, user_region):
-                    continue
-                map_q = info.get("addr") or info.get("facility") or info.get("name") or ""
-                map_link = naver_map_search_link(map_q) if map_q else None
-                table_rows.append({
-                    "프로그램명": info.get("name") or "",
-                    "운영기관명": info.get("facility") or "",
-                    "대상": info.get("target") or "",
-                    "요금": info.get("fee") or "",
-                    "시간/일정": info.get("time") or "",
-                    "장소(주소)": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
-                    "전화": info.get("tel") or "",
-                    "지도": map_link,
-                })
-            if not table_rows:
-                # 지역 필터로 전부 탈락한 경우: 필터 없이 상위 표시
-                st.caption("지역 엄격 필터로 0건 → 관련도 상위 활동을 완화된 기준으로 표시합니다.")
-                for row in y_hits[:15]:
-                    info = normalize_youth_program(row)
-                    if not info.get("name") and not info.get("facility"):
-                        continue
-                    map_q = info.get("addr") or info.get("facility") or info.get("name") or ""
-                    table_rows.append({
-                        "프로그램명": info.get("name") or "",
-                        "운영기관명": info.get("facility") or "",
-                        "대상": info.get("target") or "",
-                        "요금": info.get("fee") or "",
-                        "시간/일정": info.get("time") or "",
-                        "장소(주소)": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
-                        "전화": info.get("tel") or "",
-                        "지도": naver_map_search_link(map_q) if map_q else None,
-                    })
-            if not table_rows:
-                cm_empty("청소년활동 후보가 있으나 프로그램명·시설 필드를 해석하지 못했습니다. 캐시 원본 키를 확인하세요.")
-            else:
-                try:
-                    import pandas as pd
-                    df = pd.DataFrame(table_rows[:15])
-                    cfg = {}
-                    if "지도" in df.columns:
-                        cfg["지도"] = st.column_config.LinkColumn("지도", display_text="지도")
-                    st.dataframe(df, use_container_width=True, hide_index=True, column_config=cfg)
-                except Exception:
-                    for r in table_rows[:15]:
-                        st.write(r)
-
-
-
         # IX. 복지혜택
         cm_h1("🏛️", "", "복지혜택 안내")
         sec += 1
@@ -6614,21 +6500,32 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             st.dataframe(dfw, use_container_width=True, hide_index=True, column_config=cfg or None)
             st.caption("※ 수급 가능 여부는 복지로·지자체에서 최종 확인하세요.")
 
-        # X. 지도 — 진로체험 + 청소년활동 (시·도 필터, 주소→좌표)
-        cm_h1("🗺️", "", "지역 활동 · 체험 지도")
+
+        # X. 지도 — 진로체험·진로교육·청소년활동
+        cm_h1("🗺️", "", "지역 교육 · 활동 · 체험 지도")
         sec += 1
+        user_region = (st.session_state.get("career_profile") or {}).get("region") or user_region or ""
+        if not user_region:
+            ipr = st.session_state.get("career_ip_region") or {}
+            user_region = ipr.get("region") or ""
         sido_tok = region_sido_token(user_region)
         map_points = []
-        # 진로체험(꿈길)
+
+        # 1) 꿈길: 진로체험 / 진로교육 구분
         for row in (st.session_state.get("career_ggomgil") or []):
             if not isinstance(row, dict):
                 continue
             area = str(row.get("체험지역명") or row.get("지역") or "")
             place = str(row.get("체험처명") or row.get("운영기관명") or "")
-            title = str(row.get("프로그램명") or row.get("체험프로그램명") or row.get("제목") or place)
+            title = str(row.get("체험프로그램명") or row.get("프로그램명") or row.get("제목") or place)
             blob = f"{area} {place} {title}"
             if sido_tok and sido_tok not in blob and not region_matches_user(blob, user_region):
                 continue
+            try:
+                bucket = classify_ggomgil_bucket(row)
+            except Exception:
+                bucket = "체험"
+            kind = "진로교육" if bucket == "교육" else "진로체험"
             lat, lng = row.get("위도"), row.get("경도")
             try:
                 lat = float(lat) if lat not in (None, "") else None
@@ -6643,16 +6540,20 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 map_points.append({
                     "lat": lat, "lon": lng,
                     "name": title or place,
-                    "type": "진로체험·교육",
+                    "type": kind,
                     "addr": f"{place} {area}".strip(),
+                    "meta": str(row.get("체험유형") or row.get("체험프로그램 직업유형") or ""),
                 })
-        # 청소년활동
+
+        # 2) 청소년활동
         for row in (st.session_state.get("career_youth") or []):
             if not isinstance(row, dict):
                 continue
             info = normalize_youth_program(row)
-            blob = " ".join(x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x)
-            if sido_tok and not region_matches_user(blob, user_region) and sido_tok not in blob:
+            blob = " ".join(
+                x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x
+            )
+            if blob and sido_tok and not region_matches_user(blob, user_region) and sido_tok not in blob:
                 continue
             lat, lon, _ = resolve_lat_lon({
                 "fcltyNm": info.get("facility"),
@@ -6667,15 +6568,21 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     "name": info.get("name") or info.get("facility") or "활동",
                     "type": "청소년활동",
                     "addr": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
+                    "meta": info.get("target") or "",
                 })
-        # 시·도 필터로 0건이면 필터 완화 재시도(지오코딩만)
-        if not map_points and (st.session_state.get("career_ggomgil") or st.session_state.get("career_youth")):
-            for row in (st.session_state.get("career_ggomgil") or [])[:20]:
+
+        # 좌표 0건이면 필터 완화
+        if not map_points:
+            for row in (st.session_state.get("career_ggomgil") or [])[:25]:
                 if not isinstance(row, dict):
                     continue
                 area = str(row.get("체험지역명") or "")
                 place = str(row.get("체험처명") or "")
                 title = str(row.get("체험프로그램명") or place)
+                try:
+                    kind = "진로교육" if classify_ggomgil_bucket(row) == "교육" else "진로체험"
+                except Exception:
+                    kind = "진로체험"
                 lat, lng = row.get("위도"), row.get("경도")
                 try:
                     lat = float(lat) if lat not in (None, "") else None
@@ -6685,8 +6592,11 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 if not lat or not lng:
                     lat, lng, _ = resolve_lat_lon({"addr1": area, "fcltyNm": place or title, "ctpvNm": sido_tok})
                 if lat and lng:
-                    map_points.append({"lat": lat, "lon": lng, "name": title or place, "type": "진로체험·교육", "addr": f"{place} {area}".strip()})
-            for row in (st.session_state.get("career_youth") or [])[:20]:
+                    map_points.append({
+                        "lat": lat, "lon": lng, "name": title or place, "type": kind,
+                        "addr": f"{place} {area}".strip(), "meta": "",
+                    })
+            for row in (st.session_state.get("career_youth") or [])[:25]:
                 if not isinstance(row, dict):
                     continue
                 info = normalize_youth_program(row)
@@ -6701,113 +6611,160 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                         "name": info.get("name") or info.get("facility") or "활동",
                         "type": "청소년활동",
                         "addr": info.get("addr") or "",
+                        "meta": info.get("target") or "",
                     })
 
         if not map_points:
             cm_empty(
                 f"지도에 표시할 좌표가 없습니다. (기준 시·도: {sido_tok or user_region or '미확인'}) "
-                "꿈길/청소년활동 데이터·지오코딩 키(KAKAO_REST_KEY 또는 VWORLD_API_KEY)를 확인하세요."
+                "꿈길·청소년활동 데이터 또는 지오코딩 키를 확인하세요."
             )
         else:
             import pandas as pd
-            dfm = pd.DataFrame(map_points)
-            st.caption(f"시·도 기준: **{sido_tok or user_region or '전국'}** · 표시 {len(map_points)}곳 · 마커에 마우스를 올리면 프로그램명이 표시됩니다.")
+            # 유형별 스타일
+            STYLE = {
+                "진로체험": {"color": [37, 99, 235, 230], "radius": 55, "label": "● 진로체험"},
+                "진로교육": {"color": [16, 185, 129, 230], "radius": 70, "label": "◆ 진로교육"},
+                "청소년활동": {"color": [249, 115, 22, 230], "radius": 48, "label": "▲ 청소년활동"},
+            }
+            for p in map_points:
+                stl = STYLE.get(p.get("type"), STYLE["청소년활동"])
+                p["color"] = stl["color"]
+                p["radius"] = stl["radius"]
 
-            # 색상: 진로체험=파랑, 청소년활동=주황
-            def _color(t):
-                return [37, 99, 235, 220] if "진로" in str(t) else [249, 115, 22, 220]
+            st.caption(
+                f"시·도 기준 **{sido_tok or user_region or '전국'}** · {len(map_points)}곳 · "
+                "마커에 마우스를 올리면 프로그램명이 표시됩니다."
+            )
+            st.markdown(
+                '<div style="display:flex;gap:1rem;flex-wrap:wrap;margin:0.4rem 0 0.8rem 0;">'
+                '<span style="color:#60a5fa;">● 진로체험</span>'
+                '<span style="color:#34d399;">◆ 진로교육</span>'
+                '<span style="color:#fb923c;">▲ 청소년활동</span>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
-            dfm = dfm.copy()
-            dfm["color"] = dfm["type"].map(_color)
-            # 쐐기(핀) 형태: 큰 원 + 중심점 (pydeck)
             try:
                 import pydeck as pdk
+                dfm = pd.DataFrame(map_points)
                 mid_lat = float(dfm["lat"].mean())
                 mid_lon = float(dfm["lon"].mean())
-                # 핀처럼 보이게: 큰 반투명 원 + 작은 강조 점
-                layer_halo = pdk.Layer(
-                    "ScatterplotLayer",
-                    data=dfm,
-                    get_position="[lon, lat]",
-                    get_fill_color="color",
-                    get_radius=140,
-                    radius_min_pixels=10,
-                    radius_max_pixels=40,
-                    pickable=True,
-                    opacity=0.55,
-                )
-                layer_pin = pdk.Layer(
-                    "ScatterplotLayer",
-                    data=dfm,
-                    get_position="[lon, lat]",
-                    get_fill_color="color",
-                    get_radius=45,
-                    radius_min_pixels=6,
-                    radius_max_pixels=16,
-                    pickable=True,
-                    opacity=0.95,
-                )
+                layers = []
+                for kind, stl in STYLE.items():
+                    sub = dfm[dfm["type"] == kind]
+                    if sub.empty:
+                        continue
+                    # 외곽 halo
+                    layers.append(pdk.Layer(
+                        "ScatterplotLayer",
+                        data=sub,
+                        get_position="[lon, lat]",
+                        get_fill_color=stl["color"][:3] + [90],
+                        get_radius=stl["radius"] * 2.2,
+                        radius_min_pixels=8,
+                        radius_max_pixels=36,
+                        pickable=True,
+                    ))
+                    # 중심 마커 (크기 차이로 모양 구분감)
+                    layers.append(pdk.Layer(
+                        "ScatterplotLayer",
+                        data=sub,
+                        get_position="[lon, lat]",
+                        get_fill_color=stl["color"],
+                        get_radius=stl["radius"],
+                        radius_min_pixels=5,
+                        radius_max_pixels=18,
+                        pickable=True,
+                    ))
                 tooltip = {
-                    "html": "<div style='font-weight:700;margin-bottom:4px;'>{name}</div>"
-                            "<div style='opacity:0.9'>{type}</div>"
-                            "<div style='font-size:12px;opacity:0.85'>{addr}</div>",
+                    "html": (
+                        "<div style='font-weight:700;margin-bottom:4px;'>{name}</div>"
+                        "<div style='color:#93c5fd;margin-bottom:2px;'>{type}</div>"
+                        "<div style='font-size:12px;opacity:0.9'>{addr}</div>"
+                        "<div style='font-size:11px;opacity:0.75'>{meta}</div>"
+                    ),
                     "style": {
-                        "backgroundColor": "rgba(15,23,42,0.95)",
+                        "backgroundColor": "rgba(15,23,42,0.96)",
                         "color": "#e2e8f0",
                         "border": "1px solid #38bdf8",
-                        "borderRadius": "10px",
-                        "padding": "8px 10px",
+                        "borderRadius": "12px",
+                        "padding": "10px 12px",
                         "fontSize": "13px",
+                        "boxShadow": "0 8px 24px rgba(0,0,0,0.35)",
                     },
                 }
                 deck = pdk.Deck(
                     map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
                     initial_view_state=pdk.ViewState(
-                        latitude=mid_lat, longitude=mid_lon, zoom=10, pitch=35, bearing=0
+                        latitude=mid_lat, longitude=mid_lon, zoom=10, pitch=40, bearing=-10
                     ),
-                    layers=[layer_halo, layer_pin],
+                    layers=layers,
                     tooltip=tooltip,
                 )
                 st.pydeck_chart(deck, use_container_width=True)
             except Exception as e:
-                st.warning(f"상세 지도 로드 실패 → 기본 지도로 표시 ({e})")
-                st.map(dfm[["lat", "lon"]].dropna())
+                st.warning(f"상세 지도 로드 실패: {e}")
+                st.map(pd.DataFrame(map_points)[["lat", "lon"]].dropna())
 
-            # 선택 시 표에서 강조 (호버 연동 대신 선택 하이라이트)
-            labels = [f"{i+1}. [{p.get('type')}] {p.get('name')}" for i, p in enumerate(map_points)]
-            choice = st.selectbox(
-                "지도 항목 선택 (선택 시 아래 표에서 강조)",
-                options=["(선택 안 함)"] + labels,
-                key="map_point_select",
+            # 디자인 표 (카드형 HTML)
+            st.markdown(
+                """
+                <style>
+                .map-table-wrap { margin-top: 0.75rem; }
+                .map-row {
+                  display: grid;
+                  grid-template-columns: 7.5rem 1fr auto;
+                  gap: 0.75rem;
+                  align-items: start;
+                  background: linear-gradient(180deg, rgba(30,41,59,0.95), rgba(15,23,42,0.92));
+                  border: 1px solid rgba(148,163,184,0.22);
+                  border-radius: 14px;
+                  padding: 0.85rem 1rem;
+                  margin-bottom: 0.55rem;
+                  box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+                }
+                .map-badge {
+                  display: inline-block;
+                  font-size: 0.78rem; font-weight: 700;
+                  padding: 0.28rem 0.55rem; border-radius: 999px;
+                  white-space: nowrap;
+                }
+                .badge-exp { background: rgba(37,99,235,0.25); color: #93c5fd; border: 1px solid rgba(96,165,250,0.45); }
+                .badge-edu { background: rgba(16,185,129,0.2); color: #6ee7b7; border: 1px solid rgba(52,211,153,0.4); }
+                .badge-act { background: rgba(249,115,22,0.2); color: #fdba74; border: 1px solid rgba(251,146,60,0.45); }
+                .map-title { font-weight: 700; color: #f8fafc; font-size: 0.98rem; margin-bottom: 0.2rem; }
+                .map-sub { color: #94a3b8; font-size: 0.84rem; line-height: 1.45; }
+                .map-link a {
+                  display: inline-block; padding: 0.35rem 0.7rem; border-radius: 10px;
+                  background: rgba(37,99,235,0.25); color: #93c5fd !important;
+                  text-decoration: none; font-size: 0.82rem; font-weight: 600;
+                  border: 1px solid rgba(96,165,250,0.4);
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
             )
-            rows = []
-            for i, p in enumerate(map_points):
-                rows.append({
-                    "No": i + 1,
-                    "구분": p["type"],
-                    "프로그램/시설명": p["name"],
-                    "위치": p.get("addr") or "",
-                    "지도": naver_map_link(p["lat"], p["lon"], p["name"]) or naver_map_search_link(p.get("addr") or p["name"]),
-                })
-            dft = pd.DataFrame(rows)
-            if choice and choice != "(선택 안 함)":
-                sel_i = labels.index(choice)
-                p = map_points[sel_i]
-                st.markdown(
-                    f'<div class="cm-card" style="border:2px solid #38bdf8;">'
-                    f'<div class="cm-card-title">📍 선택: {p.get("name")}</div>'
-                    f'<div class="cm-body">{p.get("type")} · {p.get("addr") or ""}</div>'
-                    f'</div>',
-                    unsafe_allow_html=True,
+            badge_cls = {"진로체험": "badge-exp", "진로교육": "badge-edu", "청소년활동": "badge-act"}
+            html_rows = ['<div class="map-table-wrap">']
+            for p in map_points[:40]:
+                bcls = badge_cls.get(p.get("type"), "badge-act")
+                link = naver_map_link(p["lat"], p["lon"], p["name"]) or naver_map_search_link(p.get("addr") or p["name"])
+                meta = p.get("meta") or ""
+                addr = p.get("addr") or ""
+                sub = " · ".join(x for x in [addr, meta] if x)
+                link_html = f'<div class="map-link"><a href="{link}" target="_blank">지도</a></div>' if link else ""
+                html_rows.append(
+                    f'<div class="map-row">'
+                    f'<div><span class="map-badge {bcls}">{p.get("type")}</span></div>'
+                    f'<div><div class="map-title">{p.get("name") or "-"}</div>'
+                    f'<div class="map-sub">{sub}</div></div>'
+                    f'{link_html}'
+                    f'</div>'
                 )
-                # 선택 행을 맨 위로
-                dft = pd.concat([dft.iloc[[sel_i]], dft.drop(dft.index[sel_i])], ignore_index=True)
-            st.dataframe(
-                dft,
-                use_container_width=True,
-                hide_index=True,
-                column_config={"지도": st.column_config.LinkColumn("지도", display_text="지도")},
-            )
+            html_rows.append("</div>")
+            st.markdown("\n".join(html_rows), unsafe_allow_html=True)
+
 
 
 else:
