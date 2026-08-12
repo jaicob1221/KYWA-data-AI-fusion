@@ -3445,7 +3445,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                한국청소년활동진흥원 · AI 업무지원 도구</span></div>""",
+                한국청소년활동진흥원 · 데이터 융복합 서비스</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
@@ -3726,7 +3726,7 @@ if st.session_state.username == ADMIN_USER:
         st.sidebar.caption("아직 실행 기록이 없습니다.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("디지털정보부 · 업무지원 도구")
+st.sidebar.caption("디지털정보부 · 데이터 융복합 서비스")
 
 # ---------- 메인 ----------
 if tool == "🏠 처음 화면":
@@ -5564,6 +5564,53 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
                     else:
                         st.error("수집 결과가 비었습니다. API 키·엔드포인트를 확인하세요.")
                         st.write(meta)
+            if y_all:
+                st.markdown("#### 캐시 로컬 저장")
+                st.caption("아래 버튼으로 PC에 다운로드할 수 있습니다.")
+                # gzip json 원본
+                try:
+                    raw_gz = YOUTH_CACHE_FILE.read_bytes() if YOUTH_CACHE_FILE.exists() else None
+                except Exception:
+                    raw_gz = None
+                cdl1, cdl2, cdl3 = st.columns(3)
+                with cdl1:
+                    if raw_gz:
+                        st.download_button(
+                            "📦 JSON.GZ 원본",
+                            data=raw_gz,
+                            file_name="youth_programs.json.gz",
+                            mime="application/gzip",
+                            key="dl_youth_gz",
+                        )
+                with cdl2:
+                    import pandas as pd
+                    try:
+                        df_y = pd.json_normalize(y_all)
+                        csv_y = df_y.to_csv(index=False).encode("utf-8-sig")
+                        st.download_button(
+                            "📥 CSV 다운로드",
+                            data=csv_y,
+                            file_name=f"youth_programs_{len(y_all)}.csv",
+                            mime="text/csv",
+                            key="dl_youth_csv",
+                        )
+                    except Exception as e:
+                        st.caption(f"CSV 변환 실패: {e}")
+                with cdl3:
+                    try:
+                        js = json.dumps(
+                            {"count": len(y_all), "items": y_all},
+                            ensure_ascii=False,
+                        ).encode("utf-8")
+                        st.download_button(
+                            "📄 JSON 다운로드",
+                            data=js,
+                            file_name=f"youth_programs_{len(y_all)}.json",
+                            mime="application/json",
+                            key="dl_youth_json",
+                        )
+                    except Exception as e:
+                        st.caption(f"JSON 변환 실패: {e}")
             if y_all and st.button("청소년활동 캐시 삭제", key="btn_youth_cache_del"):
                 try:
                     YOUTH_CACHE_FILE.unlink(missing_ok=True)
