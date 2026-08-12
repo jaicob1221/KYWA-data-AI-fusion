@@ -2901,6 +2901,81 @@ def ai_welfare_eligibility_hint(provider, api_key, profile: dict, items: list, l
 _GEOCODE_CACHE = {}
 
 
+
+def detect_region_from_ip():
+    """
+    접속 IP 기반 시·도 추정.
+    반환 예: {"region":"경기도 성남시", "ctpv":"경기도", "sgg":"성남시", "source":"ip"}
+    """
+    import requests
+    out = {"region": "", "ctpv": "", "sgg": "", "source": ""}
+    try:
+        res = requests.get("https://ipapi.co/json/", timeout=8, verify=False)
+        data = res.json() or {}
+        if data.get("error"):
+            raise RuntimeError(data.get("reason") or "ipapi error")
+        city = (data.get("city") or "").strip()
+        region = (data.get("region") or "").strip()  # often province
+        country = (data.get("country_code") or "")
+        if country and country != "KR":
+            out["source"] = "ip_non_kr"
+            return out
+        # region이 영문일 수 있음 → 간단 매핑
+        eng_map = {
+            "Seoul": "서울특별시", "Busan": "부산광역시", "Daegu": "대구광역시",
+            "Incheon": "인천광역시", "Gwangju": "광주광역시", "Daejeon": "대전광역시",
+            "Ulsan": "울산광역시", "Sejong": "세종특별자치시",
+            "Gyeonggi-do": "경기도", "Gyeonggi": "경기도",
+            "Gangwon-do": "강원특별자치도", "Gangwon": "강원특별자치도",
+            "Chungcheongbuk-do": "충청북도", "Chungcheongnam-do": "충청남도",
+            "Jeollabuk-do": "전북특별자치도", "Jeollanam-do": "전라남도",
+            "Gyeongsangbuk-do": "경상북도", "Gyeongsangnam-do": "경상남도",
+            "Jeju-do": "제주특별자치도", "Jeju": "제주특별자치도",
+        }
+        ctpv = eng_map.get(region, region)
+        # 한글 도시명 보정
+        city_map = {
+            "Seongnam-si": "성남시", "Seongnam": "성남시", "Suwon": "수원시",
+            "Goyang": "고양시", "Yongin": "용인시", "Bucheon": "부천시",
+            "Ansan": "안산시", "Anyang": "안양시", "Seoul": "서울특별시",
+        }
+        sgg = city_map.get(city, city)
+        if sgg.endswith("-si"):
+            sgg = sgg.replace("-si", "시")
+        if ctpv or sgg:
+            out["ctpv"] = ctpv
+            out["sgg"] = sgg if sgg != ctpv else ""
+            out["region"] = f"{ctpv} {out['sgg']}".strip()
+            out["source"] = "ip"
+        return out
+    except Exception:
+        try:
+            res = requests.get("https://ipinfo.io/json", timeout=8, verify=False)
+            data = res.json() or {}
+            region = (data.get("region") or "").strip()
+            city = (data.get("city") or "").strip()
+            out["region"] = f"{region} {city}".strip()
+            out["ctpv"] = region
+            out["sgg"] = city
+            out["source"] = "ipinfo"
+            return out
+        except Exception:
+            return out
+
+
+def region_sido_token(region: str) -> str:
+    """시·도 단위 토큰 (지도 필터용)"""
+    ctpv, sgg = split_region_ctpv_sgg(region or "")
+    if ctpv:
+        return ctpv
+    r = str(region or "")
+    for x in ("서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+              "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주"):
+        if x in r:
+            return x
+    return r[:2] if r else ""
+
+
 def geocode_address(address: str):
     """
     주소 문자열 → (lat, lon) 또는 None
@@ -4398,7 +4473,6 @@ MENU_TOP = [
 MENU_FUSION = "🔗 KYWA 데이터 융복합 서비스"
 MENU_FUSION_SUB = [
     "🏕️ 수련시설 안전 및 인증프로그램 현황",
-    "🌟 미래로(진로 안내 도우미)",
     "🧭 청소년 통합 지원 서비스",
 ]
 MENU_BOTTOM = [
@@ -4476,7 +4550,7 @@ if st.session_state.logged_in:
             "✍️ 공문·보고서 초안 작성",
             "📧 이메일 초안 작성",
             "🏕️ 수련시설 안전 및 인증프로그램 현황",
-            "🌟 미래로(진로 안내 도우미)",
+            "🧭 청소년 통합 지원 서비스",
             "🔗 KYWA 데이터 융복합 서비스",
         )
         and main_tool != "🔗 KYWA 데이터 융복합 서비스"
@@ -4569,9 +4643,6 @@ if tool == "🏠 처음 화면":
     with b:
         st.markdown(
             '<div class="feature-card"><h4>🧭 청소년 통합 지원</h4>'
-            "<p>진로 · 지역 복지 · 인근 수련시설·활동을 한곳에서</p></div>"
-            "</div><div class='feature-grid'>"
-            '<div class="feature-card"><h4>🌟 미래로</h4>'
             '<p>대화형 진로·체험·활동 안내 도우미</p></div>',
             unsafe_allow_html=True,
         )
@@ -6196,8 +6267,17 @@ elif tool == "🏕️ 수련시설 안전 및 인증프로그램 현황":
         if st.session_state.get("fac_ai_summary"):
             result_card("AI 요약", st.session_state["fac_ai_summary"])
 
-elif tool == "🌟 미래로(진로 안내 도우미)":
-    page_header("🌟 미래로(진로 안내 도우미)")
+elif tool == "🧭 청소년 통합 지원 서비스":
+    page_header("🧭 청소년 통합 지원 서비스", "진로·체험 · 복지혜택 · 지역 활동 지도")
+    # 접속지(IP) 기반 시·도 추정 — 대화에서 지역을 먼저 묻지 않음
+    if "career_ip_region" not in st.session_state:
+        st.session_state.career_ip_region = detect_region_from_ip()
+    if st.session_state.career_ip_region.get("region"):
+        if not (st.session_state.get("career_profile") or {}).get("region"):
+            p = dict(st.session_state.get("career_profile") or {})
+            p["region"] = st.session_state.career_ip_region["region"]
+            st.session_state.career_profile = p
+
 
     if "career_msgs" not in st.session_state:
         st.session_state.career_msgs = []
@@ -6209,6 +6289,9 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
         st.session_state.career_ggomgil = []
     if "career_youth" not in st.session_state:
         st.session_state.career_youth = []
+        st.session_state.career_welfare = None
+        st.session_state.career_welfare_note = ""
+        st.session_state.career_welfare_meta = {}
 
     # 관리자: 청소년활동 일괄 캐시 + 진로솔루션 스크래핑
     if st.session_state.get("username") == ADMIN_USER:
@@ -7484,290 +7567,71 @@ elif tool == "🌟 미래로(진로 안내 도우미)":
 
 
 
-elif tool == "🧭 청소년 통합 지원 서비스":
-    page_header("🧭 청소년 통합 지원 서비스", "미래로 진로·체험 + 수련시설 + 지역 복지")
-    st.caption(
-        "채팅으로 진로를 상담하고, 같은 흐름에서 인근 수련시설·활동(지도)과 복지혜택을 안내합니다. "
-        "복지 수급 여부는 확정하지 않습니다."
-    )
-
-    # 세션 상태 (미래로와 유사한 채팅)
-    for k, v in {
-        "integ_msgs": [],
-        "integ_profile": {},
-        "integ_ready": False,
-        "integ_result": None,
-    }.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-    if not st.session_state.integ_msgs:
-        st.session_state.integ_msgs = [{
-            "role": "assistant",
-            "content": (
-                "안녕! 나는 청소년 통합 지원 길잡이야.\n"
-                "지금 학교(초·중·고)와 요즘 관심 있는 것(직업·취미·과목)을 편하게 말해줘.\n"
-                "진로·체험과 함께, 주변에 있는 수련시설·활동과 받을 수 있는 지원 정보도 찾아줄게."
-            ),
-        }]
-
-    # 채팅 히스토리
-    for m in st.session_state.integ_msgs:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-
-    user_text = st.chat_input("학교와 관심사를 입력해 주세요")
-    if user_text and user_text.strip():
-        try:
-            touch_session()
-        except Exception:
-            pass
-        st.session_state.integ_msgs.append({"role": "user", "content": user_text.strip()})
-
-        if not api_key:
-            st.session_state.integ_msgs.append({
-                "role": "assistant",
-                "content": "AI API 키가 필요합니다. 사이드바 설정을 확인해 주세요.",
-            })
-            st.rerun()
-
-        # 프로필 추출 (지역은 물어보지 않음 — 발화에 있으면 추출)
-        hist = "\n".join(
-            f"{'학생' if m['role']=='user' else '안내'}: {m['content']}"
-            for m in st.session_state.integ_msgs[-12:]
-        )
-        extract_prompt = (
-            "다음 대화에서 JSON만 출력.\n"
-            '{"school":"초|중|고|","region":"시도 시군구(발화에 있을 때만, 없으면 빈문자)",'
-            '"interests":["관심1"],"ready":true/false,"reply":"다음 질문 또는 안내 1~3문장"}\n'
-            "규칙:\n"
-            "- 지역을 묻지 말 것. 사용자가 말한 학교명·지명에서만 region 추론.\n"
-            "- school·interests가 채워지면 ready=true.\n"
-            "- reply는 친근한 반말, 지역 질문 금지.\n"
-            f"대화:\n{hist}"
-        )
-        try:
-            raw = get_ai_response(
-                provider, api_key,
-                "청소년 통합 상담. 지역을 묻지 않음. JSON만.",
-                extract_prompt,
-            )
-            mjson = re.search(r"\{[\s\S]*\}", raw or "")
-            obj = json.loads(mjson.group(0)) if mjson else {}
-        except Exception:
-            obj = {
-                "reply": "학교(초·중·고)랑 관심 있는 걸 조금만 더 알려줄래?",
-                "ready": False,
-            }
-
-        reply = str(obj.get("reply") or "조금 더 알려줄래?")
-        st.session_state.integ_msgs.append({"role": "assistant", "content": reply})
-
-        prof = dict(st.session_state.integ_profile or {})
-        if obj.get("school"):
-            prof["school"] = str(obj.get("school"))
-        if obj.get("region"):
-            prof["region"] = str(obj.get("region"))
-        if obj.get("interests"):
-            ints = obj.get("interests")
-            if isinstance(ints, list):
-                prof["interests"] = [str(x) for x in ints if x]
-            elif ints:
-                prof["interests"] = [str(ints)]
-        st.session_state.integ_profile = prof
-
-        ready = bool(obj.get("ready")) and bool(prof.get("school")) and bool(prof.get("interests"))
-        if ready:
-            st.session_state.integ_ready = True
-            region = str(prof.get("region") or "").strip()
-            school = str(prof.get("school") or "")
-            interests = prof.get("interests") or []
-            interest_str = ", ".join(interests)
-            ctpv, sgg = split_region_ctpv_sgg(region) if region else ("", "")
-            life, age_n = map_school_to_life_age(school, "")
-            thema_codes = map_interest_to_thema_codes(interest_str)
-
-            result = {
-                "profile": {
-                    "region": region, "ctpv": ctpv, "sgg": sgg,
-                    "school": school, "age": age_n, "interest": interest_str,
-                },
-                "career_hint": "",
-                "welfare": [], "welfare_meta": {}, "welfare_note": "", "welfare_details": [],
-                "facilities": [], "fac_meta": {},
-                "youth": [], "youth_meta": {},
-                "map_points": [],
-            }
-
-            wkey = get_welfare_api_key()
-            try:
-                dkey = (st.secrets.get("DATA_GO_KR_KEY", "") or "").strip()
-            except Exception:
-                dkey = ""
-
-            # 진로 (미래로 스타일 요약)
-            try:
-                result["career_hint"] = get_ai_response(
-                    provider, api_key,
-                    "청소년 진로 안내. 5~8문장. 존댓말 가능. 과한 단정 금지.",
-                    f"교급 {school}, 지역 {region or '미상'}, 관심 {interest_str}. "
-                    f"관련 직업·학과 방향과 해볼 체험을 안내.",
+        # IX. 복지혜택
+        cm_h1("🏛️", roman[min(sec, len(roman)-1)], "복지혜택 안내")
+        sec += 1
+        prof = st.session_state.get("career_profile") or {}
+        user_region = (prof.get("region") or "").strip()
+        if not user_region:
+            ipr = st.session_state.get("career_ip_region") or detect_region_from_ip()
+            st.session_state.career_ip_region = ipr
+            if ipr.get("region"):
+                user_region = ipr["region"]
+                prof = dict(prof)
+                prof["region"] = user_region
+                st.session_state.career_profile = prof
+                st.caption(f"접속 위치 추정: {user_region}")
+        ctpv, sgg = split_region_ctpv_sgg(user_region)
+        life, age_n = map_school_to_life_age(str(prof.get("school") or ""), "")
+        interest_str = ", ".join(prof.get("interests") or []) if isinstance(prof.get("interests"), list) else str(prof.get("interests") or prof.get("interest") or "")
+        thema_codes = map_interest_to_thema_codes(interest_str)
+        wkey = get_welfare_api_key()
+        wlist = st.session_state.get("career_welfare")
+        if wlist is None and wkey:
+            collected = []
+            wmeta = {}
+            for thema in (thema_codes + [""]):
+                part, wmeta = fetch_welfare_list(
+                    wkey, ctpv_nm=ctpv, sgg_nm=sgg, life_array=life,
+                    age=age_n, search_wrd=(interest_str.split(",")[0].strip() if interest_str else "청소년"),
+                    intrs_thema=thema, num_of_rows=20,
                 )
-            except Exception as e:
-                result["career_hint"] = str(e)
-
-            # 복지
-            if wkey:
-                collected, wmeta = [], {}
-                for thema in (thema_codes + [""]):
-                    part, wmeta = fetch_welfare_list(
-                        wkey,
-                        ctpv_nm=ctpv,
-                        sgg_nm=sgg,
-                        life_array=life,
-                        age=age_n,
-                        search_wrd=interests[0] if interests else "청소년",
-                        intrs_thema=thema,
-                        num_of_rows=20,
-                    )
-                    for p in part or []:
-                        if isinstance(p, dict):
-                            collected.append(p)
-                    if len(collected) >= 15:
-                        break
-                seen_s, uniq = set(), []
-                for p in collected:
-                    sid = p.get("servId") or p.get("servNm")
-                    if sid in seen_s:
-                        continue
-                    seen_s.add(sid)
-                    uniq.append(p)
-                if uniq:
-                    picked, note = ai_welfare_eligibility_hint(
-                        provider, api_key,
-                        result["profile"], uniq, limit=8,
-                    )
-                    result["welfare"] = picked
-                    result["welfare_note"] = note
-                result["welfare_meta"] = wmeta
-                details = []
-                for p in result["welfare"][:3]:
-                    sid = p.get("servId")
-                    if sid:
-                        det, _ = fetch_welfare_detail(wkey, sid)
-                        if det:
-                            details.append(det)
-                result["welfare_details"] = details
+                for p in part or []:
+                    if isinstance(p, dict):
+                        collected.append(p)
+                if len(collected) >= 15:
+                    break
+            seen_s, uniq = set(), []
+            for p in collected:
+                sid = p.get("servId") or p.get("servNm")
+                if sid in seen_s:
+                    continue
+                seen_s.add(sid)
+                uniq.append(p)
+            if api_key and uniq:
+                picked, note = ai_welfare_eligibility_hint(provider, api_key, prof, uniq, limit=8)
+                st.session_state.career_welfare = picked
+                st.session_state.career_welfare_note = note
             else:
-                result["welfare_meta"] = {"error": "복지 API 키 없음"}
-
-            # 수련시설 → 지도 포인트
-            map_points = []
-            if dkey and ctpv:
-                try:
-                    year = str(datetime.now().year - 1)
-                    fac_items, fac_meta = fetch_training_facility_safety(
-                        dkey, ctpv_nm=ctpv, evl_yr=year, page_no=1, num_of_rows=40,
-                    )
-                    result["facilities"] = fac_items or []
-                    result["fac_meta"] = fac_meta or {}
-                    for f in fac_items or []:
-                        if not isinstance(f, dict):
-                            continue
-                        lat, lon, how = resolve_lat_lon(f)
-                        if not lat or not lon:
-                            continue
-                        fn = f.get("fcltyNm") or f.get("fcltNm") or "수련시설"
-                        map_points.append({
-                            "lat": lat, "lon": lon,
-                            "name": fn,
-                            "type": "수련시설",
-                            "addr": f.get("addr1") or f.get("adres") or "",
-                            "extra": (f.get("snthsEvlGrd") or "") + (f" ·{how}" if how else ""),
-                        })
-                except Exception as e:
-                    result["fac_meta"] = {"error": str(e)}
-            elif not ctpv:
-                result["fac_meta"] = {"error": "대화에서 지역·학교 위치를 파악하지 못해 시설 지도를 생략합니다."}
-
-            # 청소년활동 (캐시) — 좌표 없으면 검색 링크용만
-            y_all, y_meta = load_youth_file_cache()
-            if y_all:
-                cand = filter_youth_cache_by_keywords(
-                    y_all, interests, region=region, school=school, limit=40
-                )
-                if cand:
-                    result["youth"] = ai_pick_youth_from_cache(
-                        provider, api_key, interests, region, cand, limit=10, school=school
-                    )
-                else:
-                    result["youth"] = []
-                result["youth_meta"] = {"cache": (y_meta or {}).get("count"), "picked": len(result["youth"])}
-                # 활동 프로그램도 주소→좌표 변환 후 지도 마킹
-                for it in result["youth"] or []:
-                    if not isinstance(it, dict):
-                        continue
-                    info = normalize_youth_program(it)
-                    row = dict(it)
-                    row.setdefault("fcltyNm", info.get("facility"))
-                    row.setdefault("addr1", info.get("addr"))
-                    row.setdefault("ctpvNm", info.get("sido"))
-                    lat, lon, how = resolve_lat_lon(row)
-                    if lat and lon:
-                        map_points.append({
-                            "lat": lat, "lon": lon,
-                            "name": info.get("name") or info.get("facility") or "활동",
-                            "type": "활동프로그램",
-                            "addr": info.get("addr") or "",
-                            "extra": how,
-                        })
-            else:
-                result["youth_meta"] = {"error": "청소년활동 캐시 없음"}
-
-            result["map_points"] = map_points
-            st.session_state.integ_result = result
-            st.session_state.integ_msgs.append({
-                "role": "assistant",
-                "content": (
-                    f"고마워! 정리해 봤어.\n"
-                    f"- 교급: **{school}**"
-                    + (f" · 지역: **{region}**" if region else " · 지역: (대화에서 확인된 범위)")
-                    + f"\n- 관심: **{interest_str}**\n\n"
-                    f"아래에서 진로 안내, 복지혜택, 지도 위 수련시설·활동을 확인해 줘."
-                ),
-            })
-        st.rerun()
-
-    # 결과 영역
-    res = st.session_state.get("integ_result")
-    if res:
-        import pandas as pd
-        prof = res.get("profile") or {}
-        st.markdown("---")
-        cm_h1("🌟", "I", "진로 안내")
-        if res.get("career_hint"):
-            st.markdown(f'<div class="cm-card">{res["career_hint"]}</div>', unsafe_allow_html=True)
+                st.session_state.career_welfare = uniq[:8]
+                st.session_state.career_welfare_note = ""
+            st.session_state.career_welfare_meta = wmeta
+            wlist = st.session_state.career_welfare
+        if not wkey:
+            cm_empty("복지 API 키가 없습니다. secrets에 WELFARE_API_KEY 또는 DATA_GO_KR_KEY를 설정하세요.")
+        elif not wlist:
+            cm_empty(str((st.session_state.get("career_welfare_meta") or {}).get("error") or "복지 조회 결과가 없습니다."))
         else:
-            cm_empty("진로 안내를 준비하지 못했습니다.")
-
-        cm_h1("🏛️", "II", "복지혜택 안내")
-        if res.get("welfare_note"):
-            st.caption(res["welfare_note"])
-        wlist = res.get("welfare") or []
-        if not wlist:
-            cm_empty(str((res.get("welfare_meta") or {}).get("error") or "복지 조회 결과가 없습니다."))
-        else:
+            if st.session_state.get("career_welfare_note"):
+                st.caption(st.session_state.career_welfare_note)
+            import pandas as pd
             rows = []
             for w in wlist:
-                name = w.get("servNm") or ""
-                ctpv = w.get("ctpvNm") or ""
-                sgg = w.get("sggNm") or ""
                 rows.append({
-                    "서비스명": name,
-                    "지역": f"{ctpv} {sgg}".strip(),
+                    "서비스명": w.get("servNm") or "",
+                    "지역": f"{w.get('ctpvNm') or ''} {w.get('sggNm') or ''}".strip(),
                     "생애주기": w.get("lifeNmArray") or "",
                     "대상": w.get("trgterIndvdlNmArray") or "",
-                    "관심주제": w.get("intrsThemaNmArray") or "",
                     "요약": (w.get("servDgst") or "")[:100],
                     "신청": w.get("aplyMtdNm") or "",
                     "상세링크": w.get("servDtlLink") or "",
@@ -7777,65 +7641,84 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             if "상세링크" in dfw.columns:
                 cfg["상세링크"] = st.column_config.LinkColumn("상세링크", display_text="바로가기")
             st.dataframe(dfw, use_container_width=True, hide_index=True, column_config=cfg or None)
-            if res.get("welfare_details"):
-                with st.expander("복지 상세 (선정기준·신청방법)"):
-                    for d in res["welfare_details"]:
-                        st.markdown(f"**{d.get('servNm') or '서비스'}**")
-                        st.write(f"- 지원대상: {(d.get('sprtTrgtCn') or '-')[:350]}")
-                        st.write(f"- 선정기준: {(d.get('slctCritCn') or '-')[:350]}")
-                        st.write(f"- 신청방법: {(d.get('aplyMtdCn') or '-')[:350]}")
-                        st.caption("※ 수급 여부는 복지로·지자체에서 최종 확인하세요.")
-                        st.markdown("---")
+            st.caption("※ 수급 가능 여부는 복지로·지자체에서 최종 확인하세요.")
 
-        cm_h1("🗺️", "III", "인근 수련시설 · 지도")
-        pts = res.get("map_points") or []
-        if pts:
-            dfm = pd.DataFrame(pts)
-            st.map(dfm, latitude="lat", longitude="lon", size=40, zoom=10)
+        # X. 지도 — 진로체험 + 청소년활동 (시·도 필터, 주소→좌표)
+        cm_h1("🗺️", roman[min(sec, len(roman)-1)], "지역 활동 · 체험 지도")
+        sec += 1
+        sido_tok = region_sido_token(user_region)
+        map_points = []
+        # 진로체험(꿈길)
+        for row in (st.session_state.get("career_ggomgil") or []):
+            if not isinstance(row, dict):
+                continue
+            area = str(row.get("체험지역명") or row.get("지역") or "")
+            place = str(row.get("체험처명") or row.get("운영기관명") or "")
+            title = str(row.get("프로그램명") or row.get("체험프로그램명") or row.get("제목") or place)
+            blob = f"{area} {place} {title}"
+            if sido_tok and sido_tok not in blob and not region_matches_user(blob, user_region):
+                continue
+            lat, lng = row.get("위도"), row.get("경도")
+            try:
+                lat = float(lat) if lat not in (None, "") else None
+                lng = float(lng) if lng not in (None, "") else None
+            except Exception:
+                lat = lng = None
+            if not lat or not lng:
+                lat, lng, _ = resolve_lat_lon({
+                    "addr1": area, "fcltyNm": place or title, "ctpvNm": sido_tok,
+                })
+            if lat and lng:
+                map_points.append({
+                    "lat": lat, "lon": lng,
+                    "name": title or place,
+                    "type": "진로체험·교육",
+                    "addr": f"{place} {area}".strip(),
+                })
+        # 청소년활동
+        for row in (st.session_state.get("career_youth") or []):
+            if not isinstance(row, dict):
+                continue
+            info = normalize_youth_program(row)
+            blob = " ".join(x for x in [info.get("sido"), info.get("sgg"), info.get("addr"), info.get("facility"), info.get("name")] if x)
+            if sido_tok and not region_matches_user(blob, user_region) and sido_tok not in blob:
+                continue
+            lat, lon, _ = resolve_lat_lon({
+                "fcltyNm": info.get("facility"),
+                "addr1": info.get("addr"),
+                "ctpvNm": info.get("sido") or sido_tok,
+                "sggNm": info.get("sgg"),
+                "prgrmNm": info.get("name"),
+            })
+            if lat and lon:
+                map_points.append({
+                    "lat": lat, "lon": lon,
+                    "name": info.get("name") or info.get("facility") or "활동",
+                    "type": "청소년활동",
+                    "addr": info.get("addr") or f"{info.get('sido','')} {info.get('sgg','')}".strip(),
+                })
+        if not map_points:
+            cm_empty(
+                "지도에 표시할 좌표를 만들지 못했습니다. "
+                + (f"(기준 시·도: {sido_tok or '미확인'}) " if True else "")
+                + "접속 위치가 없거나 지오코딩 키(KAKAO/VWORLD)를 확인해 주세요."
+            )
+        else:
+            import pandas as pd
+            dfm = pd.DataFrame(map_points)
+            st.caption(f"시·도 기준: **{sido_tok or user_region or '전국'}** · 표시 {len(map_points)}곳")
+            st.map(dfm, latitude="lat", longitude="lon", size=50, zoom=10)
             st.dataframe(
                 pd.DataFrame([{
-                    "구분": p.get("type"),
-                    "이름": p.get("name"),
-                    "주소": p.get("addr"),
-                    "등급/비고": p.get("extra"),
-                    "지도": naver_map_link(p.get("lat"), p.get("lon"), p.get("name")) or "",
-                } for p in pts]),
+                    "구분": p["type"],
+                    "프로그램/시설명": p["name"],
+                    "위치": p.get("addr") or "",
+                    "지도": naver_map_link(p["lat"], p["lon"], p["name"]) or naver_map_search_link(p.get("addr") or p["name"]),
+                } for p in map_points]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={"지도": st.column_config.LinkColumn("지도", display_text="지도")},
             )
-        else:
-            cm_empty(str((res.get("fac_meta") or {}).get("error") or "지도에 표시할 시설 좌표가 없습니다."))
-
-        cm_h1("🌱", "IV", "관련 활동 프로그램")
-        yitems = res.get("youth") or []
-        if not yitems:
-            cm_empty(str((res.get("youth_meta") or {}).get("error") or "추천 활동이 없습니다."))
-        else:
-            yrows = []
-            for it in yitems:
-                info = normalize_youth_program(it) if isinstance(it, dict) else {}
-                place = f"{info.get('facility') or ''} {info.get('addr') or ''}".strip()
-                yrows.append({
-                    "프로그램": info.get("name") or "",
-                    "시설/기관": info.get("facility") or "",
-                    "대상": info.get("target") or "",
-                    "지역": f"{info.get('sido') or ''} {info.get('sgg') or ''}".strip(),
-                    "지도": naver_map_search_link(place) if place else "",
-                })
-            st.dataframe(
-                pd.DataFrame(yrows),
-                use_container_width=True,
-                hide_index=True,
-                column_config={"지도": st.column_config.LinkColumn("지도", display_text="지도")},
-            )
-
-        if st.button("대화 초기화", key="integ_reset"):
-            st.session_state.integ_msgs = []
-            st.session_state.integ_profile = {}
-            st.session_state.integ_ready = False
-            st.session_state.integ_result = None
-            st.rerun()
 
 
 else:
