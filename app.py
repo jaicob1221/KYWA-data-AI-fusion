@@ -26,7 +26,8 @@ REGS_DIR = Path("regs")
 ERP_DIR = Path("regs_erp")
 VECTOR_DIR = Path("vector_db")
 CACHE_DIR = Path("cache")
-CERT_CACHE_FILE = CACHE_DIR / "cert_programs.json.gz"
+CERT_CACHE_FILE = CACHE_DIR / "cert_programs.json.gz"  # 수련시설 인증프로그램(svc004)
+QNET_CERT_CACHE_FILE = CACHE_DIR / "qnet_certs.json.gz"  # 국가자격(Q-Net) 종목
 CERT_CACHE_TTL_HOURS = 24  # 파일 캐시 유효 시간(시간)
 YOUTH_CACHE_FILE = CACHE_DIR / "youth_programs.json.gz"
 YOUTH_CACHE_TTL_DAYS = 30  # 청소년활동 캐시 유효(일)
@@ -649,37 +650,57 @@ def get_qnet_service_key() -> str:
         return ""
 
 
-def load_cert_file_cache():
-    """영구 캐시 로드. TTL 없음(삭제 전까지 유지)."""
+
+def load_qnet_cert_cache():
+    """국가자격(Q-Net) 영구 캐시 로드. 삭제 전까지 유지."""
     import gzip
-    if not CERT_CACHE_FILE.exists():
+    if not QNET_CERT_CACHE_FILE.exists():
         return [], {"exists": False, "count": 0}
     try:
-        with gzip.open(CERT_CACHE_FILE, "rt", encoding="utf-8") as f:
+        with gzip.open(QNET_CERT_CACHE_FILE, "rt", encoding="utf-8") as f:
             data = json.load(f)
-        items = data.get("items") or data if isinstance(data, list) else (data.get("items") or [])
+        items = data.get("items") if isinstance(data, dict) else (data if isinstance(data, list) else [])
         meta = data.get("meta") if isinstance(data, dict) else {}
         meta = dict(meta or {})
         meta["exists"] = True
-        meta["count"] = len(items)
-        return items, meta
+        meta["count"] = len(items or [])
+        meta["saved_at"] = meta.get("saved_at") or (data.get("saved_at") if isinstance(data, dict) else "")
+        return items or [], meta
     except Exception as e:
         return [], {"exists": True, "error": str(e), "count": 0}
 
 
-def save_cert_file_cache(items: list, meta: dict = None):
+def save_qnet_cert_cache(items: list, meta: dict = None):
+    """국가자격 캐시 저장 (Streamlit Cloud 포함, 원자적 저장)."""
     import gzip
+    from datetime import datetime, timezone
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise RuntimeError(f"캐시 폴더 생성 실패: {e}") from e
     payload = {
         "items": items or [],
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(items or []),
         "meta": {
             **(meta or {}),
-            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "saved_at": datetime.now(timezone.utc).isoformat(),
             "count": len(items or []),
         },
     }
-    CERT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(CERT_CACHE_FILE, "wt", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+    tmp = QNET_CERT_CACHE_FILE.with_suffix(".tmp.gz")
+    try:
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        tmp.replace(QNET_CERT_CACHE_FILE)
+    except Exception as e:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
+        raise RuntimeError(f"자격증 캐시 저장 실패: {e}") from e
+    return {"path": str(QNET_CERT_CACHE_FILE), "count": payload["count"], "saved_at": payload["saved_at"]}
 
 
 def _parse_qnet_xml_items(xml_text: str) -> list:
@@ -4820,7 +4841,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                데이터 융복합 서비스</span></div>""",
+                한국청소년활동진흥원 · 데이터 융복합 서비스</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
@@ -5967,7 +5988,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     st.error(str(e))
         
         with st.expander("관리자 · 국가자격(Q-Net) 자격증 캐시"):
-            c_items, c_meta = load_cert_file_cache()
+            c_items, c_meta = load_qnet_cert_cache()
             st.caption(
                 f"캐시: {c_meta.get('count', 0)}건 · 저장: {c_meta.get('saved_at', '-')} · "
                 f"삭제 전까지 영구 보관"
@@ -5984,24 +6005,31 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                 do_del = st.button("자격증 캐시 삭제", key="admin_cert_del")
             if do_del:
                 try:
-                    if CERT_CACHE_FILE.exists():
-                        CERT_CACHE_FILE.unlink()
+                    if QNET_CERT_CACHE_FILE.exists():
+                        QNET_CERT_CACHE_FILE.unlink()
                     st.success("자격증 캐시를 삭제했습니다.")
                 except Exception as e:
                     st.error(str(e))
             if do_cert and qkey:
                 prog = st.empty()
                 def _p(msg):
-                    prog.caption(msg)
-                with st.spinner("국가자격 종목 수집 중… (수 분 소요 가능)"):
-                    items, meta = collect_all_qnet_certs(
-                        qkey, enrich_trade=bool(do_enrich), max_enrich=300, progress=_p
-                    )
-                if items:
-                    save_cert_file_cache(items, meta)
-                    st.success(f"자격증 캐시 저장 완료: {len(items)}건")
-                else:
-                    st.error(f"수집 실패 또는 0건. meta={meta}")
+                    prog.caption(str(msg))
+                try:
+                    with st.spinner("국가자격 종목 수집 중… (수 분 소요 가능)"):
+                        items, meta = collect_all_qnet_certs(
+                            qkey, enrich_trade=bool(do_enrich), max_enrich=300, progress=_p
+                        )
+                    if items:
+                        info = save_qnet_cert_cache(items, meta)
+                        st.success(
+                            f"자격증 캐시 저장 완료: {info.get('count', len(items))}건 · "
+                            f"{info.get('path', '')}"
+                        )
+                        st.session_state["_qnet_cert_flash"] = info
+                    else:
+                        st.error(f"수집 실패 또는 0건. meta={meta}")
+                except Exception as e:
+                    st.error(f"자격증 캐시 처리 오류: {type(e).__name__}: {e}")
             if c_items:
                 st.download_button(
                     "자격증 캐시 JSON 다운로드",
@@ -6805,7 +6833,7 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
             # 관련 자격증 (Q-Net 캐시, 관리자 수집분)
             try:
-                cert_all, _cm = load_cert_file_cache()
+                cert_all, _cm = load_qnet_cert_cache()
                 cert_cand = filter_certs_by_keywords(cert_all, search_kws, limit=40)
                 if len(cert_cand) < 5 and cert_all:
                     cert_cand = (filter_certs_by_keywords(cert_all, list(search_kws) + ["기능사", "기사"], limit=40)
