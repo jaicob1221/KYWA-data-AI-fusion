@@ -639,6 +639,283 @@ def classify_map_item_type(name: str = "", meta: str = "", source: str = "") -> 
 
 
 
+
+# ---------- 국가자격(Q-Net) 캐시 ----------
+def get_qnet_service_key() -> str:
+    try:
+        k = (st.secrets.get("QNET_SERVICE_KEY", "") or st.secrets.get("DATA_GO_KR_KEY", "") or "").strip()
+        return k
+    except Exception:
+        return ""
+
+
+def load_cert_file_cache():
+    """영구 캐시 로드. TTL 없음(삭제 전까지 유지)."""
+    import gzip
+    if not CERT_CACHE_FILE.exists():
+        return [], {"exists": False, "count": 0}
+    try:
+        with gzip.open(CERT_CACHE_FILE, "rt", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("items") or data if isinstance(data, list) else (data.get("items") or [])
+        meta = data.get("meta") if isinstance(data, dict) else {}
+        meta = dict(meta or {})
+        meta["exists"] = True
+        meta["count"] = len(items)
+        return items, meta
+    except Exception as e:
+        return [], {"exists": True, "error": str(e), "count": 0}
+
+
+def save_cert_file_cache(items: list, meta: dict = None):
+    import gzip
+    payload = {
+        "items": items or [],
+        "meta": {
+            **(meta or {}),
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "count": len(items or []),
+        },
+    }
+    CERT_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(CERT_CACHE_FILE, "wt", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+
+def _parse_qnet_xml_items(xml_text: str) -> list:
+    import xml.etree.ElementTree as ET
+    if not xml_text:
+        return []
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return []
+    items = []
+    for node in root.iter():
+        tag = node.tag.split("}")[-1] if "}" in node.tag else node.tag
+        if tag.lower() in ("item", "items"):
+            if tag.lower() == "item":
+                row = {}
+                for ch in list(node):
+                    ct = ch.tag.split("}")[-1] if "}" in ch.tag else ch.tag
+                    row[ct] = (ch.text or "").strip()
+                if row:
+                    items.append(row)
+    return items
+
+
+def fetch_qnet_qualinfo_page(service_key: str, series_cd: str, page_no: int = 1, num_rows: int = 100) -> tuple:
+    """종목 목록·진로정보 (InquiryQualInfo)"""
+    import urllib.parse
+    import urllib.request
+    base = "http://openapi.q-net.or.kr/api/service/rest/InquiryQualInfo/getList"
+    qs = urllib.parse.urlencode({
+        "serviceKey": service_key,
+        "seriesCd": series_cd,
+        "pageNo": page_no,
+        "numOfRows": num_rows,
+    }, doseq=True)
+    # serviceKey may already be encoded
+    url = f"{base}?serviceKey={service_key}&seriesCd={series_cd}&pageNo={page_no}&numOfRows={num_rows}"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "KYWA-DataFusion/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        items = _parse_qnet_xml_items(raw)
+        return items, {"ok": True, "url": base, "series": series_cd, "page": page_no}
+    except Exception as e:
+        return [], {"ok": False, "error": str(e), "series": series_cd}
+
+
+def fetch_qnet_trade_info(service_key: str, jm_cd: str) -> list:
+    """종목별 자격정보 상세 (InquiryInformationTradeNTQSVC) — 사용자 지정 API"""
+    import urllib.request
+    url = (
+        "http://openapi.q-net.or.kr/api/service/rest/InquiryInformationTradeNTQSVC/getList"
+        f"?ServiceKey={service_key}&jmCd={jm_cd}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "KYWA-DataFusion/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        return _parse_qnet_xml_items(raw)
+    except Exception:
+        return []
+
+
+def fetch_qnet_jm_list_by_year(service_key: str, base_yy: str = "2024", page_no: int = 1, num_rows: int = 100) -> list:
+    """등급별 종목 현황에서 종목코드·명 수집"""
+    import urllib.request
+    url = (
+        "http://openapi.q-net.or.kr/api/service/rest/InquiryGrdPtcondSVC/getUpperJmList"
+        f"?ServiceKey={service_key}&baseYY={base_yy}&pageNo={page_no}&numOfRows={num_rows}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "KYWA-DataFusion/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8", errors="ignore")
+        return _parse_qnet_xml_items(raw)
+    except Exception:
+        return []
+
+
+def collect_all_qnet_certs(service_key: str, enrich_trade: bool = True, max_enrich: int = 400, progress=None) -> tuple:
+    """
+    전체 종목 수집 후 캐시.
+    1) QualInfo 계열코드 + 2) 등급별 종목목록으로 jmCd 확보
+    3) (옵션) TradeNTQSVC로 상세 보강
+    """
+    by_code = {}
+    # 계열: 기술사/기능장/기사/기능사 등 흔히 쓰이는 코드
+    series_list = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10",
+                   "11", "12", "13", "14", "15", "20", "30", "40", "50", "60", "67"]
+    for sc in series_list:
+        for page in range(1, 30):
+            items, meta = fetch_qnet_qualinfo_page(service_key, sc, page, 100)
+            if not items:
+                break
+            for it in items:
+                code = str(it.get("jmCd") or it.get("jmcd") or it.get("JMCD") or "").strip()
+                name = str(
+                    it.get("jmNm") or it.get("jmfldnm") or it.get("jmnm") or it.get("qualNm") or ""
+                ).strip()
+                if not name and not code:
+                    continue
+                key = code or name
+                prev = by_code.get(key) or {}
+                prev.update({
+                    "jmCd": code or prev.get("jmCd") or "",
+                    "jmNm": name or prev.get("jmNm") or "",
+                    "seriesCd": sc,
+                    "career": it.get("Career") or it.get("career") or prev.get("career") or "",
+                    "raw_qual": {**prev.get("raw_qual", {}), **it},
+                })
+                by_code[key] = prev
+            if progress:
+                progress(f"QualInfo series={sc} page={page} 누적={len(by_code)}")
+            if len(items) < 50:
+                break
+
+    for yy in ("2024", "2025", "2023"):
+        for page in range(1, 50):
+            items = fetch_qnet_jm_list_by_year(service_key, yy, page, 100)
+            if not items:
+                break
+            for it in items:
+                code = str(it.get("jmCd") or it.get("jmcd") or "").strip()
+                name = str(it.get("jmNm") or it.get("jmnm") or "").strip()
+                if not code and not name:
+                    continue
+                key = code or name
+                prev = by_code.get(key) or {}
+                prev.update({
+                    "jmCd": code or prev.get("jmCd") or "",
+                    "jmNm": name or prev.get("jmNm") or "",
+                    "grdNm": it.get("grdNm") or prev.get("grdNm") or "",
+                    "grdCd": it.get("grdCd") or prev.get("grdCd") or "",
+                })
+                by_code[key] = prev
+            if progress:
+                progress(f"등급종목 {yy} p{page} 누적={len(by_code)}")
+            if len(items) < 50:
+                break
+        if by_code:
+            break
+
+    items = list(by_code.values())
+    # TradeNTQ 상세 보강 (종목코드 있는 항목)
+    if enrich_trade and service_key:
+        enriched = 0
+        for it in items:
+            if enriched >= max_enrich:
+                break
+            code = str(it.get("jmCd") or "").strip()
+            if not code:
+                continue
+            details = fetch_qnet_trade_info(service_key, code)
+            if details:
+                it["trade_details"] = details
+                # 종목명 보강
+                for d in details:
+                    nm = d.get("jmfldnm") or d.get("jmNm")
+                    if nm and not it.get("jmNm"):
+                        it["jmNm"] = nm
+                enriched += 1
+            if progress and enriched % 20 == 0:
+                progress(f"TradeNTQ 상세 {enriched}/{max_enrich}")
+
+    meta = {
+        "source": "Q-Net InquiryQualInfo + GrdPtcond + TradeNTQSVC",
+        "count": len(items),
+        "complete": True,
+    }
+    return items, meta
+
+
+def filter_certs_by_keywords(certs: list, keywords: list, limit: int = 30) -> list:
+    if not certs:
+        return []
+    kws = expand_interest_keywords(list(keywords or [])[:12])
+    scored = []
+    for c in certs:
+        if not isinstance(c, dict):
+            continue
+        blob = " ".join(
+            str(c.get(k) or "")
+            for k in ("jmNm", "career", "grdNm", "seriesCd")
+        )
+        for d in (c.get("trade_details") or [])[:5]:
+            if isinstance(d, dict):
+                blob += " " + " ".join(str(d.get(x) or "") for x in ("jmfldnm", "infogb", "contents"))
+        sc = sum(2 for k in kws if k and k in blob)
+        if sc > 0:
+            scored.append((sc, c))
+    scored.sort(key=lambda x: -x[0])
+    return [x[1] for x in scored[:limit]] if scored else []
+
+
+def ai_pick_certs(provider, api_key, keywords, candidates, limit=6):
+    if not candidates:
+        return []
+    if not api_key:
+        return candidates[:limit]
+    slim = []
+    for i, c in enumerate(candidates[:60]):
+        slim.append({
+            "i": i,
+            "name": str(c.get("jmNm") or "")[:40],
+            "grade": str(c.get("grdNm") or "")[:20],
+            "career": str(c.get("career") or "")[:80],
+        })
+    try:
+        raw = get_ai_response(
+            provider, api_key,
+            "자격증 추천기. JSON만. 관심·진로와 관련 높은 국가자격만.",
+            (
+                f"관심키워드: {keywords}\n"
+                f"후보: {json.dumps(slim, ensure_ascii=False)}\n"
+                f'관련 높은 순 {{"idx":[0,2]}} 최대 {limit}개. 없으면 빈 배열.'
+            ),
+        )
+        m = re.search(r"\{[\s\S]*\}", raw or "")
+        if not m:
+            return candidates[:limit]
+        data = json.loads(m.group(0))
+        idxs = data.get("idx") or []
+        out = []
+        for i in idxs:
+            try:
+                ii = int(i)
+                if 0 <= ii < len(candidates):
+                    out.append(candidates[ii])
+            except Exception:
+                pass
+        return out[:limit] or candidates[:limit]
+    except Exception:
+        return candidates[:limit]
+
+
+
 def region_matches_user(item_region: str, user_region: str) -> bool:
     """사용자 시도/도를 벗어나면 False (느슨한 포함 매칭)"""
     u = (user_region or "").strip()
@@ -4543,7 +4820,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                데이터 융복합 서비스</span></div>""",
+                한국청소년활동진흥원 · 데이터 융복합 서비스</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
@@ -5454,8 +5731,13 @@ elif tool == "🧭 청소년 통합 지원 서비스":
         st.session_state.career_ggomgil = []
     if "career_youth" not in st.session_state:
         st.session_state.career_youth = []
+    if "career_certs" not in st.session_state:
+        st.session_state.career_certs = []
+    if "career_welfare" not in st.session_state:
         st.session_state.career_welfare = None
+    if "career_welfare_note" not in st.session_state:
         st.session_state.career_welfare_note = ""
+    if "career_welfare_meta" not in st.session_state:
         st.session_state.career_welfare_meta = {}
 
     # 관리자: 청소년활동 일괄 캐시 + 진로솔루션 스크래핑
@@ -5683,6 +5965,52 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                     st.rerun()
                 except Exception as e:
                     st.error(str(e))
+        
+        with st.expander("관리자 · 국가자격(Q-Net) 자격증 캐시"):
+            c_items, c_meta = load_cert_file_cache()
+            st.caption(
+                f"캐시: {c_meta.get('count', 0)}건 · 저장: {c_meta.get('saved_at', '-')} · "
+                f"삭제 전까지 영구 보관"
+            )
+            qkey = get_qnet_service_key()
+            if not qkey:
+                st.warning("secrets에 QNET_SERVICE_KEY 또는 DATA_GO_KR_KEY를 설정하세요. (공공데이터포털 인증키)")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                do_cert = st.button("전체 자격증 수집·캐시", key="admin_cert_collect")
+            with col_b:
+                do_enrich = st.checkbox("TradeNTQ 상세 보강(느림)", value=False, key="admin_cert_enrich")
+            with col_c:
+                do_del = st.button("자격증 캐시 삭제", key="admin_cert_del")
+            if do_del:
+                try:
+                    if CERT_CACHE_FILE.exists():
+                        CERT_CACHE_FILE.unlink()
+                    st.success("자격증 캐시를 삭제했습니다.")
+                except Exception as e:
+                    st.error(str(e))
+            if do_cert and qkey:
+                prog = st.empty()
+                def _p(msg):
+                    prog.caption(msg)
+                with st.spinner("국가자격 종목 수집 중… (수 분 소요 가능)"):
+                    items, meta = collect_all_qnet_certs(
+                        qkey, enrich_trade=bool(do_enrich), max_enrich=300, progress=_p
+                    )
+                if items:
+                    save_cert_file_cache(items, meta)
+                    st.success(f"자격증 캐시 저장 완료: {len(items)}건")
+                else:
+                    st.error(f"수집 실패 또는 0건. meta={meta}")
+            if c_items:
+                st.download_button(
+                    "자격증 캐시 JSON 다운로드",
+                    data=json.dumps({"items": c_items[:5000], "meta": c_meta}, ensure_ascii=False).encode("utf-8"),
+                    file_name="qnet_certs_sample.json",
+                    mime="application/json",
+                    key="dl_cert_cache",
+                )
+
         with st.expander("관리자 · 진로솔루션 자료 스크래핑"):
             st.caption("진로상담 > 진로솔루션 게시글 목록·상세·PDF 요약을 로컬 캐시에 저장합니다.")
             jmeta = {}
@@ -5878,13 +6206,50 @@ elif tool == "🧭 청소년 통합 지원 서비스":
 
         # 추가 질의가 필요 없거나 한도 도달 → 본 분석 파이프라인
         else:
+            # ----- 관심사 필수: 학교·지역만 있으면 관심 질문 후 중단 -----
+            school_region_tokens = (
+                "초등학교", "중학교", "고등학교", "초등", "중학", "고등", "학교", "학년",
+                "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+                "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+                "특별시", "광역시", "특별자치", "중학생", "고등학생", "초등학생",
+                "다녀", "다니",
+            )
+            residual_parts = []
+            import re as _re_r
+            for m in st.session_state.career_msgs:
+                if m["role"] != "user":
+                    continue
+                s = m["content"]
+                for tok in school_region_tokens:
+                    s = s.replace(tok, " ")
+                s = _re_r.sub(r"[가-힣]{1,8}(시|군|구)", " ", s)
+                s = " ".join(s.split()).strip("야!?. ")
+                if s and len(s) >= 2:
+                    residual_parts.append(s)
+            has_interest = len(residual_parts) > 0
+            if not has_interest and not st.session_state.get("career_guide"):
+                st.session_state.career_msgs.append({
+                    "role": "assistant",
+                    "content": (
+                        "학교·지역은 알겠어!\n"
+                        "이제 요즘 관심 있는 걸 알려줄래? "
+                        "(예: 축구, 코딩, 음악, 동물, 과학 등) 하나만 말해도 돼."
+                    ),
+                })
+                st.rerun()
+
             # ============================================================
             # 파이프라인
             # ① 대화 메타 수집 → ② 조회 → ③ AI 분석
             # → ④ 분석 키워드로 꿈길·청소년활동 추천
             # ============================================================
             import re as _re
-            hist = "\n".join(f"{m['role']}: {m['content']}" for m in st.session_state.career_msgs)
+            # 사용자 발화만 (봇 인사의 예시 요리·로봇·그림이 keywords로 들어가지 않게)
+            hist = "\n".join(
+                f"{m['role']}: {m['content']}"
+                for m in st.session_state.career_msgs
+                if m["role"] == "user"
+            )
             profile = {
                 "school": "", "region": "", "keywords": [], "goal": "",
                 "activity_keywords": [],
@@ -5900,14 +6265,15 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                         api_key,
                         "진로 메타 추출기. JSON만 출력. 설명 금지.",
                         (
-                            "대화에서 아래 JSON만 출력:\n"
+                            "사용자 발화만 있다. 봇 인사의 예시(요리,로봇,그림)는 keywords에 넣지 말 것.\n"
+                            "사용자가 직접 말한 관심만 keywords에. 없으면 [].\n"
+                            "JSON만:\n"
                             '{"school":"초|중|고|모름","region":"시도시군구키워드",'
-                            '"keywords":["관심키워드최대5"],'
+                            '"keywords":["사용자관심만"],'
                             '"goal":"한줄목표",'
-                            '"activity_keywords":["체험검색용키워드최대8"]}\n'
-                            "세부분류(서양/동양 등)가 없어도 관심 분야를 넓게 잡을 것.\n"
-                            "예: 요리 → 조리,요리,제과,제빵,셰프,쿠킹,음식,디저트\n\n"
-                            + hist
+                            '"activity_keywords":["체험검색키워드"]}\n'
+                            "학교·지역만 있으면 keywords는 빈 배열.\n\n"
+                            "사용자발화:\n" + hist
                         ),
                     )
                     mjson = _re.search(r"\{[\s\S]*\}", raw or "")
@@ -5915,7 +6281,27 @@ elif tool == "🧭 청소년 통합 지원 서비스":
                         profile = {**profile, **json.loads(mjson.group(0))}
                 except Exception as e:
                     st.warning(f"메타 추출 참고: {e}")
-            else:
+            # 추출된 keywords가 비면 관심 재질문 (예시 오염/누락 방지)
+            kws_chk = profile.get("keywords") or []
+            if isinstance(kws_chk, str):
+                kws_chk = [kws_chk]
+            kws_chk = [str(k).strip() for k in kws_chk if str(k).strip()]
+            # 봇 예시만 들어온 경우 제거
+            kws_chk = [k for k in kws_chk if k not in ("요리", "로봇", "그림", "디자인") or any(
+                k in m["content"] for m in st.session_state.career_msgs if m["role"] == "user"
+            )]
+            profile["keywords"] = kws_chk
+            if not kws_chk and not st.session_state.get("career_guide"):
+                st.session_state.career_msgs.append({
+                    "role": "assistant",
+                    "content": (
+                        "관심 분야를 아직 잘 모르겠어.\n"
+                        "요즘 좋아하는 것 하나만 알려줄래? (예: 축구, 코딩, 음악, 과학)"
+                    ),
+                })
+                st.rerun()
+
+            if not api_key:
                 text_all = " ".join(
                     m["content"] for m in st.session_state.career_msgs if m["role"] == "user"
                 )
@@ -6416,6 +6802,20 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             except Exception as e:
                 st.session_state.career_youth_meta = {"error": str(e)}
             st.session_state.career_youth = youth_items or []
+
+            # 관련 자격증 (Q-Net 캐시, 관리자 수집분)
+            try:
+                cert_all, _cm = load_cert_file_cache()
+                cert_cand = filter_certs_by_keywords(cert_all, search_kws, limit=40)
+                if len(cert_cand) < 5 and cert_all:
+                    cert_cand = (filter_certs_by_keywords(cert_all, list(search_kws) + ["기능사", "기사"], limit=40)
+                                 or cert_all[:40])
+                st.session_state.career_certs = (
+                    ai_pick_certs(provider, api_key, search_kws, cert_cand, limit=6)
+                    if api_key else cert_cand[:6]
+                )
+            except Exception:
+                st.session_state.career_certs = []
             # 온통청년 정책 API 연동은 현재 제외
 
             summary_line = (
@@ -6545,6 +6945,37 @@ elif tool == "🧭 청소년 통합 지원 서비스":
             st.markdown(st.session_state["career_admission"])
             st.markdown('</div>', unsafe_allow_html=True)
 
+        # 관련 자격증 정보 (Q-Net 캐시)
+        certs = st.session_state.get("career_certs") or []
+        cm_h1("📜", "", "관련 자격증 정보")
+        if not certs:
+            cm_empty("관심·진로와 연결된 국가자격 캐시 결과가 없습니다. 관리자에서 Q-Net 자격증을 수집하세요.")
+        else:
+            for i, c in enumerate(certs[:6], 1):
+                if not isinstance(c, dict):
+                    continue
+                title = c.get("jmNm") or "자격종목"
+                grade = c.get("grdNm") or ""
+                code = c.get("jmCd") or ""
+                career = (c.get("career") or "")[:280]
+                details = c.get("trade_details") or []
+                body_parts = []
+                if career:
+                    body_parts.append(career)
+                for d in details[:3]:
+                    if not isinstance(d, dict):
+                        continue
+                    ig = d.get("infogb") or ""
+                    ct = (d.get("contents") or "")[:160]
+                    if ig or ct:
+                        body_parts.append(f"[{ig}] {ct}".strip())
+                meta = " · ".join(x for x in [grade, f"코드 {code}" if code else ""] if x)
+                link = ""
+                if code:
+                    link = f'<a href="https://www.q-net.or.kr/crf/chs/viewQualification.do?jmCd={code}" target="_blank">Q-Net</a>'
+                cm_card(f"{i}. {title}", body=" ".join(body_parts)[:400], meta=meta, links=link)
+
+        # V. 진로솔루션 참고
         # V. 진로솔루션 참고 (정리된 카드)
         jinsol_hits = st.session_state.get("career_jinsol") or []
         if jinsol_hits:
