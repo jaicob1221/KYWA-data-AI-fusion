@@ -4820,7 +4820,7 @@ if not st.session_state.logged_in:
                 """<div style="text-align:center; margin-top:0.5rem;">
                 <span style="display:inline-block; background: rgba(148,163,184,0.25); color:#e5eefb;
                 padding: 0.5rem 1.2rem; border-radius: 8px; font-size: 1.3rem; font-weight: 600;">
-                한국청소년활동진흥원 · 데이터 융복합 서비스</span></div>""",
+                데이터 융복합 서비스</span></div>""",
                 unsafe_allow_html=True,
             )
         with t3:
